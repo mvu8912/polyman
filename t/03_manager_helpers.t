@@ -52,6 +52,13 @@ $m->_apply_task_result({
 ok($m->{state}{positions}{'cond:yes'}{done}{redeem}, 'apply result marks redeem done');
 ok(!$m->{state}{positions}{'cond:yes'}{queued}{redeem}, 'apply result clears queued redeem flag');
 
+$m->{state}{positions}{'cond:yes'}{queued}{stop_hit} = JSON::PP::true;
+$m->_apply_task_result({
+    task => { action => 'stop_hit', position_key => 'cond:yes' },
+    ok   => JSON::PP::false,
+});
+ok($m->{state}{positions}{'cond:yes'}{queued}{stop_hit}, 'failed result keeps queued flag set for retries');
+
 $m->{pending_tasks} = [
     { action => 'tp1', position_key => 'cond:yes' },
 ];

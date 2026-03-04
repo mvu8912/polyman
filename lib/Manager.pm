@@ -352,9 +352,9 @@ sub _apply_task_result {
 
     my $s = $self->{state}{positions}{$key};
     my $action = $task->{action} // '';
-    delete $s->{queued}{$action};
-
     my $ok = $result->{ok} ? 1 : 0;
+    delete $s->{queued}{$action} if $ok;
+
     if ($ok && $action eq 'tp1') { $s->{tp1_done} = JSON::PP::true; }
     if ($ok && $action eq 'tp2') { $s->{tp2_done} = JSON::PP::true; }
 
