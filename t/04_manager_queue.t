@@ -92,6 +92,25 @@ $m->_queue_position_tasks($p, $s, 'dup:key', $ts);
 
 is(scalar(@{ $m->{pending_tasks} }), 1, 'same tp1 job not queued twice while queued flag set');
 
+# stop-hit sell size excludes already-queued TP sells
+$m->{cfg}{tp1_close_pct} = 25;
+$m->{cfg}{tp2_trigger_pct} = 10;
+$m->{cfg}{tp2_close_pct} = 35;
+
+my $s2 = { queued => {}, tp1_done => JSON::PP::false, tp2_done => JSON::PP::false };
+my $p2 = { size => 10, asset_id => '456', percent_pnl => 20, redeemable => JSON::PP::false, condition_id => 'c2' };
+my $ts2 = { stop_hit => 1 };
+
+$m->{pending_tasks} = [];
+$m->{active_workers} = {};
+$m->_queue_position_tasks($p2, $s2, 'stop:key', $ts2);
+
+is(scalar(@{ $m->{pending_tasks} }), 3, 'tp1, tp2 and stop_hit queued together');
+is($m->{pending_tasks}[0]{action}, 'tp1', 'first task is tp1');
+is($m->{pending_tasks}[1]{action}, 'tp2', 'second task is tp2');
+is($m->{pending_tasks}[2]{action}, 'stop_hit', 'third task is stop_hit');
+is($m->{pending_tasks}[2]{amount}, '4.00000000', 'stop_hit amount reduced by queued TP sells');
+
 # cleanup any stragglers to release resources
 for (1..20) {
     my $pid = waitpid(-1, 1);

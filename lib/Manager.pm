@@ -165,6 +165,28 @@ sub _build_task {
     };
 }
 
+sub _queued_sell_amount_for_position {
+    my ($self, $position_key) = @_;
+    my $queued = 0;
+
+    for my $task (@{ $self->{pending_tasks} || [] }) {
+        next unless ($task->{position_key} // '') eq $position_key;
+        next unless ($task->{action} // '') eq 'tp1' || ($task->{action} // '') eq 'tp2';
+        my $amount = _num_or_undef($task->{amount});
+        $queued += $amount if defined $amount && $amount > 0;
+    }
+
+    for my $pid (keys %{ $self->{active_workers} || {} }) {
+        my $task = $self->{active_workers}{$pid}{task} || {};
+        next unless ($task->{position_key} // '') eq $position_key;
+        next unless ($task->{action} // '') eq 'tp1' || ($task->{action} // '') eq 'tp2';
+        my $amount = _num_or_undef($task->{amount});
+        $queued += $amount if defined $amount && $amount > 0;
+    }
+
+    return $queued;
+}
+
 sub _child_result_path {
     my ($self, $pid) = @_;
     return $self->{cfg}{result_dir} . "/$pid.json";
@@ -425,9 +447,17 @@ sub _queue_position_tasks {
     }
 
     if ($ts->{stop_hit} && !$self->_task_is_busy($s, 'stop_hit')) {
-        my $task = $self->_build_task(action => 'stop_hit', position_key => $key, token_dec => $token_dec, amount => $size);
-        $self->enqueue_task(%$task);
-        $s->{queued}{stop_hit} = JSON::PP::true;
+        my $remaining_size = ($size + 0) - $self->_queued_sell_amount_for_position($key);
+        if ($remaining_size > 0) {
+            my $task = $self->_build_task(
+                action       => 'stop_hit',
+                position_key => $key,
+                token_dec    => $token_dec,
+                amount       => sprintf('%.8f', $remaining_size),
+            );
+            $self->enqueue_task(%$task);
+            $s->{queued}{stop_hit} = JSON::PP::true;
+        }
         return;
     }
 }
