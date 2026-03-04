@@ -40,4 +40,16 @@ $m->_apply_task_result({
 ok($m->{state}{positions}{'cond:yes'}{tp1_done}, 'apply result marks tp1 done');
 ok(!$m->{state}{positions}{'cond:yes'}{queued}{tp1}, 'apply result clears queued flag');
 
+$m->{pending_tasks} = [
+    { action => 'tp1', position_key => 'cond:yes' },
+];
+ok($m->_position_has_inflight_task('cond:yes'), 'inflight helper sees pending task');
+
+$m->{pending_tasks} = [];
+$m->{active_workers} = {
+    12345 => { task => { action => 'tp2', position_key => 'cond:yes' } },
+};
+ok($m->_position_has_inflight_task('cond:yes'), 'inflight helper sees active worker task');
+ok(!$m->_position_has_inflight_task('cond:no'), 'inflight helper false for other position');
+
 done_testing();

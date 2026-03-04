@@ -147,6 +147,22 @@ sub _pending_has_task {
     return 0;
 }
 
+sub _position_has_inflight_task {
+    my ($self, $position_key) = @_;
+    return 0 unless defined $position_key;
+
+    for my $task (@{ $self->{pending_tasks} || [] }) {
+        return 1 if ($task->{position_key} // '') eq $position_key;
+    }
+
+    for my $pid (keys %{ $self->{active_workers} || {} }) {
+        my $task = $self->{active_workers}{$pid}{task} || {};
+        return 1 if ($task->{position_key} // '') eq $position_key;
+    }
+
+    return 0;
+}
+
 sub enqueue_task {
     my ($self, %task) = @_;
     return if $self->_pending_has_task(\%task);
@@ -537,7 +553,9 @@ sub run_iteration {
     }
 
     for my $k (keys %{ $self->{state}{positions} }) {
-        delete $self->{state}{positions}{$k} unless $seen{$k};
+        next if $seen{$k};
+        next if $self->_position_has_inflight_task($k);
+        delete $self->{state}{positions}{$k};
     }
 
     $self->dispatch_workers();
