@@ -12,7 +12,8 @@ my $m = bless {
     cfg => { result_dir => '/tmp/polyman-test-results' },
     state => {
         positions => {
-            'cond:yes' => { queued => { tp1 => JSON::PP::true } },
+            'cond:yes' => { queued => { tp1 => JSON::PP::true }, done => {} },
+            'cond:restart' => { queued => { redeem => JSON::PP::true }, done => {} },
         },
     },
     pending_tasks => [],
@@ -22,6 +23,9 @@ my $m = bless {
 is($m->position_key({ condition_id => 'cond', outcome => 'yes' }), 'cond:yes', 'position_key helper');
 ok($m->_task_is_busy($m->{state}{positions}{'cond:yes'}, 'tp1'), 'busy helper true');
 ok(!$m->_task_is_busy($m->{state}{positions}{'cond:yes'}, 'tp2'), 'busy helper false');
+
+$m->_reset_orphaned_queued_state();
+ok(!keys(%{ $m->{state}{positions}{'cond:restart'}{queued} }), 'startup reset clears orphaned queued flags');
 
 my $task = $m->_build_task(action => 'tp1', position_key => 'cond:yes', token_dec => '123', amount => '1.0');
 is($task->{action}, 'tp1', 'build task action');
@@ -39,6 +43,14 @@ $m->_apply_task_result({
 });
 ok($m->{state}{positions}{'cond:yes'}{tp1_done}, 'apply result marks tp1 done');
 ok(!$m->{state}{positions}{'cond:yes'}{queued}{tp1}, 'apply result clears queued flag');
+
+$m->{state}{positions}{'cond:yes'}{queued}{redeem} = JSON::PP::true;
+$m->_apply_task_result({
+    task => { action => 'redeem', position_key => 'cond:yes' },
+    ok   => JSON::PP::true,
+});
+ok($m->{state}{positions}{'cond:yes'}{done}{redeem}, 'apply result marks redeem done');
+ok(!$m->{state}{positions}{'cond:yes'}{queued}{redeem}, 'apply result clears queued redeem flag');
 
 $m->{pending_tasks} = [
     { action => 'tp1', position_key => 'cond:yes' },

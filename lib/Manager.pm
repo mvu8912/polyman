@@ -50,6 +50,7 @@ sub new_from_env {
     $self->{wallet} = $self->{positions_api}->wallet_address();
     $self->{state}  = $self->load_state();
     $self->{state}{positions} ||= {};
+    $self->_reset_orphaned_queued_state();
 
     _mkdir_p($self->{cfg}{result_dir});
 
@@ -129,6 +130,32 @@ sub save_state {
     print $fh JSON::PP->new->utf8->canonical->pretty->encode($self->{state});
     close $fh;
     rename $tmp, $path or die "Cannot move state tmp into place: $!\n";
+}
+
+
+sub _reset_orphaned_queued_state {
+    my ($self) = @_;
+
+    my $positions = $self->{state}{positions} || {};
+    my $reset = 0;
+
+    for my $key (keys %$positions) {
+        my $s = $positions->{$key};
+        next unless ref($s) eq 'HASH';
+
+        $s->{queued} ||= {};
+        $s->{done} ||= {};
+
+        next unless ref($s->{queued}) eq 'HASH';
+        next unless keys %{ $s->{queued} };
+
+        $s->{queued} = {};
+        $reset++;
+    }
+
+    if ($reset > 0) {
+        $self->log_line("WARN: cleared orphaned queued flags for $reset positions after startup");
+    }
 }
 
 sub _task_is_busy {
@@ -328,6 +355,14 @@ sub _apply_task_result {
     my $ok = $result->{ok} ? 1 : 0;
     if ($ok && $action eq 'tp1') { $s->{tp1_done} = JSON::PP::true; }
     if ($ok && $action eq 'tp2') { $s->{tp2_done} = JSON::PP::true; }
+
+    if ($ok && ($action eq 'stop_hit'
+        || $action eq 'max_loss'
+        || $action eq 'redeem'
+        || $action eq 'close_loser')) {
+        $s->{done} ||= {};
+        $s->{done}{$action} = JSON::PP::true;
+    }
 }
 
 sub _retry_or_clear {
@@ -455,6 +490,7 @@ sub _queue_position_tasks {
 
     if (($self->{cfg}{max_loss_pct} + 0) > 0
         && !$self->_task_is_busy($s, 'max_loss')
+        && !($s->{done}{max_loss} ? 1 : 0)
         && ($percent_pnl + 0) <= -($self->{cfg}{max_loss_pct} + 0)) {
         my $task = $self->_build_task(action => 'max_loss', position_key => $key, token_dec => $token_dec, amount => $size);
         $self->enqueue_task(%$task);
@@ -462,7 +498,7 @@ sub _queue_position_tasks {
         return;
     }
 
-    if ($ts->{stop_hit} && !$self->_task_is_busy($s, 'stop_hit')) {
+    if ($ts->{stop_hit} && !$self->_task_is_busy($s, 'stop_hit') && !($s->{done}{stop_hit} ? 1 : 0)) {
         my $remaining_size = ($size + 0) - $self->_queued_sell_amount_for_position($key);
         if ($remaining_size > 0) {
             my $task = $self->_build_task(
@@ -502,22 +538,24 @@ sub run_iteration {
             tp1_done => JSON::PP::false,
             tp2_done => JSON::PP::false,
             queued   => {},
+            done     => {},
         };
         my $s = $self->{state}{positions}{$key};
         $s->{queued} ||= {};
+        $s->{done} ||= {};
 
         my $current_value = _num_or_undef($p->{current_value});
         my $token_dec   = $p->{asset_id};
         next unless defined $token_dec && $token_dec =~ /^\d+$/;
 
-        if ($self->{cfg}{close_on_redeemable} && ($p->{redeemable} ? 1 : 0) && !$self->_task_is_busy($s, 'redeem')) {
+        if ($self->{cfg}{close_on_redeemable} && ($p->{redeemable} ? 1 : 0) && !$self->_task_is_busy($s, 'redeem') && !($s->{done}{redeem} ? 1 : 0)) {
             my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;
             next;
         }
 
-        if (defined $current_value && $current_value <= 0 && !$self->_task_is_busy($s, 'close_loser')) {
+        if (defined $current_value && $current_value <= 0 && !$self->_task_is_busy($s, 'close_loser') && !($s->{done}{close_loser} ? 1 : 0)) {
             my $task = $self->_build_task(
                 action       => 'close_loser',
                 position_key => $key,
