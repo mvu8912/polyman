@@ -29,6 +29,11 @@ for my $i (1..50) {
     ok(!$m->_task_has_progress($task, $before, $after_none), "unit no progress round $i");
 }
 
+my $missing_task = { action => 'stop_hit', position_key => 'missing:1', retries => 0 };
+my $missing_before = { 'missing:1' => { size => 10, current_value => 5, redeemable => 0 } };
+my $missing_after = {};
+ok(!$m->_task_has_progress($missing_task, $missing_before, $missing_after), 'missing snapshot key is not treated as progress');
+
 for my $i (1..25) {
     my $key = "r$i";
     $m->{state}{positions}{$key} = { queued => { stop_hit => JSON::PP::true } };

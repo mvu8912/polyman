@@ -256,7 +256,9 @@ sub _task_has_progress {
     my $b = $before->{$k};
     my $a = $after->{$k};
 
-    return 1 if !$a; # disappeared = progress
+    # A missing position in the latest snapshot is ambiguous (temporary API omission
+    # or external close) and must not be treated as worker progress.
+    return 0 if !$a;
 
     my $action = $task->{action} // '';
     if ($action eq 'redeem') {
