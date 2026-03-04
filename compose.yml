@@ -1,0 +1,39 @@
+services:
+  polyman:
+    build: .
+    image: michaelpc/polyman:latest
+    restart: unless-stopped
+    environment:
+      # required wallet/env keys
+      PRIVATE_KEY: ""
+      RPC_URL: ""
+      SIGNATURE_TYPE: "proxy"
+
+      # runtime
+      POLL_INTERVAL_S: "2"
+      STATE_FILE: "/data/manager-state.json"
+      WORKER_COUNT: "2"
+      WORKER_TIMEOUT_S: "30"
+      WORKER_MAX_RETRIES: "2"
+      RESULT_DIR: "/tmp/polyman-results"
+      LOSER_SWEEP_TO: ""
+
+      # risk management
+      MAX_LOSS_PCT: "0"
+      SL_SET_TO: "10"
+      TS_TRIGGER_AT: "5"
+      TS_MOVE_EACH: "5"
+
+      # optional take profits (set to 0 to disable)
+      TP1_TRIGGER_PCT: "0"
+      TP1_CLOSE_PCT: "0"
+      TP2_TRIGGER_PCT: "0"
+      TP2_CLOSE_PCT: "0"
+
+      # redeem winners automatically
+      CLOSE_ON_REDEEMABLE: "1"
+    volumes:
+      - polyman_data:/data
+
+volumes:
+  polyman_data:
