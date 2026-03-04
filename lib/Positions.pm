@@ -117,4 +117,48 @@ sub redeem_condition {
     return { ok => JSON::PP::true, response => $resp };
 }
 
+# Best-effort close-out for loser/zero-value positions.
+# Order: sell (if possible) -> redeem (if condition available) -> transfer/sweep (if configured).
+sub close_zero_value_position {
+    my ($self, %args) = @_;
+
+    my $token_dec    = $args{token_dec};
+    my $amount       = $args{amount};
+    my $condition_id = $args{condition_id};
+    my $sweep_to     = $args{sweep_to};
+
+    my @attempts;
+
+    if (defined $token_dec && defined $amount) {
+        my $sell = $self->market_sell(token_dec => $token_dec, amount => $amount);
+        push @attempts, { action => 'sell', %$sell };
+        return { ok => JSON::PP::true, action => 'sell', attempts => \@attempts } if $sell->{ok};
+    }
+
+    if (defined $condition_id && $condition_id ne '') {
+        my $red = $self->redeem_condition(condition_id => $condition_id);
+        push @attempts, { action => 'redeem', %$red };
+        return { ok => JSON::PP::true, action => 'redeem', attempts => \@attempts } if $red->{ok};
+    }
+
+    if (defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount) {
+        my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
+            1,
+            '-o', 'json', 'ctf', 'transfer', '--token', $token_dec, '--amount', $amount, '--to', $sweep_to,
+        );
+        if ($exit == 0) {
+            push @attempts, { action => 'transfer', ok => JSON::PP::true };
+            return { ok => JSON::PP::true, action => 'transfer', attempts => \@attempts };
+        }
+        push @attempts, { action => 'transfer', ok => JSON::PP::false, error => $stderr || $stdout || 'transfer failed' };
+    }
+
+    return {
+        ok       => JSON::PP::false,
+        action   => 'none',
+        error    => 'unable to close zero value position',
+        attempts => \@attempts,
+    };
+}
+
 1;
