@@ -47,7 +47,7 @@ sub new_from_env {
         signature_type => $self->{cfg}{signature_type},
         page_size      => $self->{cfg}{page_size},
     );
-    $self->{wallet} = $self->{positions_api}->wallet_address();
+    $self->{wallet} = _env_wallet_override();
     $self->{state}  = $self->load_state();
     $self->{state}{positions} ||= {};
     $self->_reset_orphaned_queued_state();
@@ -71,6 +71,11 @@ sub _env_bool {
     return 0;
 }
 
+sub _env_wallet_override {
+    return $ENV{WALLET_ADDRESS} if defined $ENV{WALLET_ADDRESS} && $ENV{WALLET_ADDRESS} =~ /^0x[0-9a-fA-F]{40}$/;
+    return undef;
+}
+
 sub _mkdir_p {
     my ($dir) = @_;
     return unless defined $dir && length $dir;
@@ -87,6 +92,23 @@ sub _num_or_undef {
 
 sub poll_interval_s { return $_[0]{cfg}{poll_interval_s}; }
 sub wallet          { return $_[0]{wallet}; }
+
+sub _ensure_wallet {
+    my ($self) = @_;
+    return $self->{wallet} if defined $self->{wallet} && $self->{wallet} ne '';
+
+    my $wallet = eval { $self->{positions_api}->wallet_address() };
+    if ($@) {
+        my $err = $@;
+        $err =~ s/\s+$//;
+        $self->log_line("WARN: wallet unavailable: $err");
+        return undef;
+    }
+
+    $self->{wallet} = $wallet;
+    $self->log_line("Wallet detected: $wallet");
+    return $wallet;
+}
 
 sub now_utc { strftime('%Y-%m-%dT%H:%M:%SZ', gmtime()) }
 
@@ -519,12 +541,19 @@ sub _queue_position_tasks {
 sub run_iteration {
     my ($self) = @_;
 
-    my $positions = $self->{positions_api}->fetch_positions($self->{wallet});
+    $self->reap_workers();
+
+    my $wallet = $self->_ensure_wallet();
+    my $positions = [];
+    if (defined $wallet && $wallet ne '') {
+        $positions = $self->{positions_api}->fetch_positions($wallet);
+    }
+
     my $snapshot = $self->_position_snapshot($positions);
     $self->{last_snapshot} = $snapshot;
-
-    $self->reap_workers();
     $self->monitor_stalled_workers($snapshot);
+
+    return unless defined $wallet && $wallet ne '';
 
     my %seen;
 
