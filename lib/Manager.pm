@@ -55,6 +55,7 @@ sub new_from_env {
     $self->_reset_orphaned_queued_state();
 
     _mkdir_p($self->{cfg}{result_dir});
+    $self->_log_wallet_env_summary();
 
     return $self;
 }
@@ -104,6 +105,16 @@ sub _looks_like_loser {
     return 1 if defined($cv) && $cv == 0 && defined($cp) && $cp == 0;
 
     return 0;
+}
+
+sub _log_wallet_env_summary {
+    my ($self) = @_;
+
+    my $wallet = defined $ENV{WALLET_ADDRESS} ? 'set' : 'unset';
+    my $pk = defined $ENV{PRIVATE_KEY} && $ENV{PRIVATE_KEY} ne '' ? 'set' : 'unset';
+    my $sig = defined $self->{cfg}{signature_type} && $self->{cfg}{signature_type} ne '' ? $self->{cfg}{signature_type} : 'default';
+
+    $self->log_line("INFO: wallet env summary wallet_address=$wallet private_key=$pk signature_type=$sig");
 }
 
 sub poll_interval_s { return $_[0]{cfg}{poll_interval_s}; }
@@ -535,8 +546,10 @@ sub _retry_or_clear {
     my $key = $task->{position_key};
     my $action = $task->{action};
 
+    my $is_permanent = $self->_is_permanent_task_failure($action, $reason);
     my $retry = ($task->{retries} // 0) + 1;
-    if ($retry <= $self->{cfg}{worker_max_retries}) {
+
+    if (!$is_permanent && $retry <= $self->{cfg}{worker_max_retries}) {
         my %new = %$task;
         $new{retries} = $retry;
         $self->enqueue_task(%new);
@@ -546,12 +559,14 @@ sub _retry_or_clear {
 
     if (defined $key && exists $self->{state}{positions}{$key}) {
         delete $self->{state}{positions}{$key}{queued}{$action};
-        if ($self->_is_permanent_task_failure($action, $reason)) {
+        if ($is_permanent) {
             $self->{state}{positions}{$key}{done} ||= {};
             $self->{state}{positions}{$key}{done}{$action} = JSON::PP::true;
         }
     }
-    $self->log_line("ERR: giving up task action=$action key=$key reason=$reason");
+
+    my $tag = $is_permanent ? 'permanent failure' : 'retry limit reached';
+    $self->log_line("ERR: giving up task action=$action key=$key reason=$reason detail=$tag");
 }
 
 sub reap_workers {
