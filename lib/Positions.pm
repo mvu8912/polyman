@@ -274,37 +274,23 @@ sub _transfer_outcome_token {
         error => 'missing sweep args',
     } unless defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount;
 
-    my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
-        1,
-        '-o', 'json', 'ctf', 'transfer', '--token', $token_dec, '--amount', $amount, '--to', $sweep_to,
-    );
+    my $txhash = eval {
+        $self->_sweep_transfer_via_raw_tx(
+            token_dec => $token_dec,
+            amount    => $amount,
+            sweep_to  => $sweep_to,
+        );
+    };
 
-    return { ok => JSON::PP::true } if $exit == 0;
+    return {
+        ok     => JSON::PP::true,
+        txhash => $txhash,
+        method => 'raw_tx',
+    } if defined $txhash && $txhash ne '';
 
-    my $te = $stderr || $stdout || 'transfer failed';
-    if ($te =~ /unrecognized subcommand '\Qtransfer\E'|unrecognized subcommand 'transfer'/i) {
-        my $fallback = eval {
-            $self->_sweep_transfer_via_raw_tx(
-                token_dec => $token_dec,
-                amount    => $amount,
-                sweep_to  => $sweep_to,
-            );
-        };
-
-        return {
-            ok     => JSON::PP::true,
-            txhash => $fallback,
-            method => 'raw_tx',
-        } if defined $fallback && $fallback ne '';
-
-        my $fallback_err = $@ || '';
-        if ($fallback_err ne '') {
-            $fallback_err =~ s/\s+\z//;
-            return { ok => JSON::PP::false, error => "transfer unsupported by polymarket cli; fallback failed: $fallback_err" };
-        }
-        $te = 'transfer unsupported by polymarket cli';
-    }
-    return { ok => JSON::PP::false, error => $te };
+    my $err = $@ || 'raw transfer failed';
+    $err =~ s/\s+\z//;
+    return { ok => JSON::PP::false, error => $err };
 }
 
 sub _load_eth_deps {
@@ -317,7 +303,7 @@ sub _rpc_call {
     my ($self, $method, $params) = @_;
 
     my $rpc = $ENV{RPC_URL} // '';
-    die "RPC_URL missing for raw transfer fallback\n" unless $rpc ne '';
+    die "RPC_URL missing for raw transfer\n" unless $rpc ne '';
 
     my $payload = JSON::PP::encode_json({
         jsonrpc => '2.0',
@@ -371,10 +357,10 @@ sub _sweep_transfer_via_raw_tx {
 
     my $pk = $self->{private_key} // '';
     $pk =~ s/^0x//i;
-    die "private key missing for raw transfer fallback\n" unless $pk =~ /^[0-9a-fA-F]{64}$/;
+    die "private key missing for raw transfer\n" unless $pk =~ /^[0-9a-fA-F]{64}$/;
 
     my $from = $self->{wallet_address} // '';
-    die "wallet address missing for raw transfer fallback\n" unless $from =~ /^0x[0-9a-fA-F]{40}$/;
+    die "wallet address missing for raw transfer\n" unless $from =~ /^0x[0-9a-fA-F]{40}$/;
 
     my $key = Blockchain::Ethereum::Key->new(private_key => pack('H*', $pk));
     my $derived_from = '' . $key->address;
