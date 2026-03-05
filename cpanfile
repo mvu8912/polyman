@@ -1,5 +1,5 @@
-require 'Blockchain::Ethereum';
-require 'Capture::Tiny';
-require 'Getopt::Long';
-require 'JSON::XS';
-require 'Math::BigInt';
+requires 'Blockchain::Ethereum';
+requires 'Capture::Tiny';
+requires 'Getopt::Long';
+requires 'JSON::XS';
+requires 'Math::BigInt';

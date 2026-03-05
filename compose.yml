@@ -5,8 +5,9 @@ services:
     restart: unless-stopped
     environment:
       # required wallet/env keys
+      WALLET_ADDRESS: ""
       PRIVATE_KEY: ""
-      RPC_URL: ""
+      RPC_URL: "https://polygon.publicnode.com"
       SIGNATURE_TYPE: "proxy"
 
       # runtime
@@ -33,7 +34,13 @@ services:
       # redeem winners automatically
       CLOSE_ON_REDEEMABLE: "1"
     volumes:
-      - polyman_data:/data
+    - ./bin:/app/bin
+    - ./data:/data
+    - ./lib:/app/lib
+    - ./t:/app/t
+    command:
+    - perl
+    - /app/bin/manager.pl
 
-volumes:
-  polyman_data:
+include:
+- ./personal.yml
