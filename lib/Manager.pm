@@ -90,6 +90,20 @@ sub _num_or_undef {
     return $v + 0;
 }
 
+sub _looks_like_loser {
+    my ($self, $p) = @_;
+    return 0 unless ref($p) eq 'HASH';
+
+    my $pp = _num_or_undef($p->{percent_pnl});
+    return 1 if defined($pp) && $pp <= -99;
+
+    my $cv = _num_or_undef($p->{current_value});
+    my $cp = _num_or_undef($p->{cur_price});
+    return 1 if defined($cv) && $cv == 0 && defined($cp) && $cp == 0;
+
+    return 0;
+}
+
 sub poll_interval_s { return $_[0]{cfg}{poll_interval_s}; }
 sub wallet          { return $_[0]{wallet}; }
 
@@ -579,7 +593,11 @@ sub run_iteration {
         my $token_dec = $self->_resolve_token_dec($p);
         my $has_token_dec = _is_token_id($token_dec);
 
-        if ($self->{cfg}{close_on_redeemable} && ($p->{redeemable} ? 1 : 0) && !$self->_task_is_busy($s, 'redeem') && !($s->{done}{redeem} ? 1 : 0)) {
+        if ($self->{cfg}{close_on_redeemable}
+            && ($p->{redeemable} ? 1 : 0)
+            && !$self->_looks_like_loser($p)
+            && !$self->_task_is_busy($s, 'redeem')
+            && !($s->{done}{redeem} ? 1 : 0)) {
             my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;

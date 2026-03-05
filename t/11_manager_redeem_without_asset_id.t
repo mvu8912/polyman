@@ -64,8 +64,8 @@ my $m = bless {
 }
 
 is(scalar @{ $m->{pending_tasks} }, 1, 'one task queued');
-is($m->{pending_tasks}[0]{action}, 'redeem', 'redeem task queued without asset_id');
-is($m->{pending_tasks}[0]{condition_id}, 'c1', 'condition_id passed through');
+is($m->{pending_tasks}[0]{action}, 'close_loser', 'redeemable loser is queued for close_loser, not redeem');
+is($m->{pending_tasks}[0]{condition_id}, 'c1', 'condition_id passed through for close_loser');
 
 
 done_testing();
