@@ -26,3 +26,17 @@ To run a specific Perl script within the managed environment, use:
 ```
 carton exec perl <script_name>.pl
 ```
+
+5. For `polymarket` cli you will need to run this command to install it. Some of the function needs that to be run / tested.
+
+```
+curl -sSL https://raw.githubusercontent.com/Polymarket/polymarket-cli/main/install.sh | sh
+```
+
+6. For Capture::Tiny when testing. You can include that inside t/lib folder
+
+```
+carton exec prove -I t/lib -r t
+```
+
+7. For any positions related matter. Like list active positions, sell a position in market value or limit price, close a position or redeem a position or sweep / transfer a position. Always refer back to bin/PERFECT-EXAMPLE-HOW-POSTIONS-WORKS.pl to get idea how to do it.
