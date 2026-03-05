@@ -49,4 +49,28 @@ $m->_retry_or_clear({ action => 'tp1', position_key => 'c1:YES', retries => 0 },
 is(scalar @{ $m->{pending_tasks} }, 1, 'non-permanent failures still retry');
 is($m->{pending_tasks}[0]{retries}, 1, 'retry counter incremented for non-permanent failure');
 
+my $m2 = bless {
+    cfg => {
+        state_file => $state_path,
+        result_dir => $tmpd,
+        worker_max_retries => 0,
+        signature_type => '',
+    },
+    state => {
+        positions => {
+            'c2:YES' => {
+                queued => { close_loser => JSON::PP::true },
+                done => {},
+            },
+        },
+    },
+    pending_tasks => [],
+    active_workers => {},
+    last_snapshot => {},
+}, 'Manager';
+
+$m2->_retry_or_clear({ action => 'close_loser', position_key => 'c2:YES', retries => 0 }, 'stalled worker');
+ok($m2->{state}{positions}{'c2:YES'}{done}{close_loser}, 'close_loser marked done when retry limit reached (prevents infinite requeue loops)');
+ok(!$m2->{state}{positions}{'c2:YES'}{queued}{close_loser}, 'close_loser queued flag cleared after retry-limit give up');
+
 done_testing();

@@ -564,7 +564,11 @@ sub _retry_or_clear {
 
     if (defined $key && exists $self->{state}{positions}{$key}) {
         delete $self->{state}{positions}{$key}{queued}{$action};
-        if ($is_permanent) {
+
+        my $mark_done = $is_permanent ? 1 : 0;
+        $mark_done = 1 if !$is_permanent && ($action eq 'close_loser' || $action eq 'redeem');
+
+        if ($mark_done) {
             $self->{state}{positions}{$key}{done} ||= {};
             $self->{state}{positions}{$key}{done}{$action} = JSON::PP::true;
         }
@@ -613,18 +617,37 @@ sub reap_workers {
     }
 }
 
+sub _worker_timeout_for_task {
+    my ($self, $task) = @_;
+
+    my $base = $self->{cfg}{worker_timeout_s};
+    $base = 0 + ($base // 0);
+
+    my $action = ref($task) eq 'HASH' ? ($task->{action} // '') : '';
+    if ($action eq 'close_loser' || $action eq 'redeem' || $action eq 'tp1' || $action eq 'tp2' || $action eq 'stop_hit' || $action eq 'max_loss') {
+        return $base unless exists $self->{cfg}{post_action_verify_timeout_s};
+
+        my $verify = $self->{cfg}{post_action_verify_timeout_s};
+        $verify = 0 + ($verify // 0);
+        my $min_needed = $verify + 15;
+        return $min_needed if $base < $min_needed;
+    }
+
+    return $base;
+}
+
 sub monitor_stalled_workers {
     my ($self, $snapshot) = @_;
 
-    my $timeout = $self->{cfg}{worker_timeout_s};
-    return if $timeout <= 0;
-
     for my $pid (keys %{ $self->{active_workers} }) {
         my $meta = $self->{active_workers}{$pid};
+        my $task = $meta->{task};
+        my $timeout = $self->_worker_timeout_for_task($task);
+        next if $timeout <= 0;
+
         my $age = time() - ($meta->{started_at} // time());
         next if $age < $timeout;
 
-        my $task = $meta->{task};
         my $baseline = $meta->{baseline} || {};
         my $has_progress = $self->_task_has_progress($task, $baseline, $snapshot);
         if ($has_progress) {
@@ -634,7 +657,7 @@ sub monitor_stalled_workers {
             next;
         }
 
-        $self->log_line("WARN: worker pid=$pid stalled action=$task->{action} key=$task->{position_key}, killing");
+        $self->log_line("WARN: worker pid=$pid stalled action=$task->{action} key=$task->{position_key} age=${age}s timeout=${timeout}s, killing");
         kill 'TERM', $pid;
         waitpid($pid, WNOHANG);
         kill 'KILL', $pid;
