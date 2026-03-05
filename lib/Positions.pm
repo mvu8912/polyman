@@ -347,24 +347,64 @@ sub _token_id_to_hex {
     return _bigint_to_hex($bi);
 }
 
+sub _to_uint256_decimal_string {
+    my ($self, $id) = @_;
+    return $id if defined $id && $id =~ /^\d+$/;
+
+    my $hex = $id // '';
+    $hex =~ s/^0x//i;
+    $hex = '0' if $hex eq '';
+
+    my $bi = Math::BigInt->from_hex('0x' . $hex);
+    return $bi->bstr();
+}
+
+sub _ctf_balance_of {
+    my ($self, $owner, $token_hex) = @_;
+    _load_eth_deps();
+
+    return '0' unless defined $token_hex && $token_hex =~ /^0x[0-9a-fA-F]+$/;
+
+    my $token_dec = $self->_to_uint256_decimal_string($token_hex);
+    my $enc  = Blockchain::Ethereum::ABI::Encoder->new;
+    my $data = $enc->function('balanceOf')->append(address => $owner)
+      ->append(uint256 => $token_dec)->encode();
+
+    my $ret = $self->_rpc_call('eth_call', [{ to => $CTF_ERC1155, data => $data }, 'latest']);
+    $ret //= '0x0';
+    $ret =~ s/^0x//i;
+    $ret = '0' if $ret eq '';
+
+    my $bi = Math::BigInt->from_hex('0x' . $ret);
+    return $bi->bstr();
+}
+
 sub _sweep_transfer_via_raw_tx {
     my ($self, %args) = @_;
     _load_eth_deps();
 
     my $token_hex = $self->_token_id_to_hex($args{token_dec});
-    my $amount    = $args{amount};
     my $sweep_to  = $args{sweep_to};
 
     my $pk = $self->{private_key} // '';
     $pk =~ s/^0x//i;
     die "private key missing for raw transfer\n" unless $pk =~ /^[0-9a-fA-F]{64}$/;
 
-    my $from = $self->{wallet_address} // '';
-    die "wallet address missing for raw transfer\n" unless $from =~ /^0x[0-9a-fA-F]{40}$/;
-
     my $key = Blockchain::Ethereum::Key->new(private_key => pack('H*', $pk));
     my $derived_from = '' . $key->address;
-    die "wallet address does not match private key ($derived_from)\n" unless lc($derived_from) eq lc($from);
+    my $from = $self->{wallet_address} // '';
+    if ($from eq '') {
+        $from = $derived_from;
+    }
+    elsif ($from !~ /^0x[0-9a-fA-F]{40}$/) {
+        die "wallet address invalid for raw transfer\n";
+    }
+    elsif (lc($derived_from) ne lc($from)) {
+        die "wallet address does not match private key ($derived_from)\n";
+    }
+
+    my $balance = $self->_ctf_balance_of($from, $token_hex);
+    return '' if !defined($balance) || $balance !~ /^\d+$/ || $balance eq '0';
 
     my $token_dec_str = _hex_to_bigint($token_hex)->bstr();
     my $enc = Blockchain::Ethereum::ABI::Encoder->new;
@@ -372,7 +412,7 @@ sub _sweep_transfer_via_raw_tx {
       ->append(address => $from)
       ->append(address => $sweep_to)
       ->append(uint256 => $token_dec_str)
-      ->append(uint256 => "$amount")
+      ->append(uint256 => "$balance")
       ->append(bytes   => '00')
       ->encode();
 
