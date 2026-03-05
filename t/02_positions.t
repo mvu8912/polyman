@@ -87,4 +87,55 @@ is(
     'token_dec_for_position falls back to clob_token_id when market lookup fails',
 );
 
+{
+    package CmdCapturePositions;
+    use parent 'Positions';
+
+    sub new_with_results {
+        my ($class, $results, %args) = @_;
+        my $self = $class->SUPER::new(%args);
+        $self->{_results} = $results;
+        $self->{_calls} = [];
+        return $self;
+    }
+
+    sub run_cmd_capture {
+        my ($self, @cmd) = @_;
+        push @{ $self->{_calls} }, [@cmd];
+        my $r = shift @{ $self->{_results} };
+        return @$r;
+    }
+
+    sub calls { return $_[0]{_calls}; }
+}
+
+my $p9 = CmdCapturePositions->new_with_results([
+    [1, '', 'No wallet configured'],
+    [0, '{"ok":true}', ''],
+],
+    signature_type => 'proxy',
+    private_key => '0xabc',
+    wallet_address => '0x1111111111111111111111111111111111111111',
+);
+my $p9s = $p9->market_sell(token_dec => '123', amount => '1.0');
+ok($p9s->{ok}, 'market_sell retries with private key flag after wallet-config error');
+is(scalar @{ $p9->calls }, 2, 'polymarket invoked twice (initial + private-key retry)');
+my $second = join(' ', @{ $p9->calls->[1] });
+like($second, qr/--private-key 0xabc/, 'private-key flag added on retry');
+
+my $old_pm_pk = exists $ENV{POLYMARKET_PRIVATE_KEY} ? $ENV{POLYMARKET_PRIVATE_KEY} : undef;
+my $old_pm_wa = exists $ENV{POLYMARKET_WALLET_ADDRESS} ? $ENV{POLYMARKET_WALLET_ADDRESS} : undef;
+
+my $p10 = CmdCapturePositions->new_with_results([
+    [0, '{"ok":true}', ''],
+],
+    signature_type => 'proxy',
+    private_key => '0xabc',
+    wallet_address => '0x1111111111111111111111111111111111111111',
+);
+$p10->market_sell(token_dec => '123', amount => '1.0');
+
+is((exists $ENV{POLYMARKET_PRIVATE_KEY} ? $ENV{POLYMARKET_PRIVATE_KEY} : undef), $old_pm_pk, 'POLYMARKET_PRIVATE_KEY restored after command');
+is((exists $ENV{POLYMARKET_WALLET_ADDRESS} ? $ENV{POLYMARKET_WALLET_ADDRESS} : undef), $old_pm_wa, 'POLYMARKET_WALLET_ADDRESS restored after command');
+
 done_testing();

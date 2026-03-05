@@ -48,6 +48,8 @@ sub new_from_env {
     $self->{positions_api} = Positions->new(
         signature_type => $self->{cfg}{signature_type},
         page_size      => $self->{cfg}{page_size},
+        private_key    => ($ENV{PRIVATE_KEY} // ''),
+        wallet_address => ($ENV{WALLET_ADDRESS} // ''),
     );
     $self->{wallet} = _env_wallet_override();
     $self->{state}  = $self->load_state();
@@ -419,10 +421,13 @@ sub _run_task_in_child {
     my $api = Positions->new(
         signature_type => $self->{cfg}{signature_type},
         page_size      => $self->{cfg}{page_size},
+        private_key    => ($ENV{PRIVATE_KEY} // ''),
+        wallet_address => ($ENV{WALLET_ADDRESS} // ''),
     );
 
     my $task_desc = JSON::PP->new->canonical->encode($task);
     $self->log_line("INFO: worker starting pid=$$ task=$task_desc");
+    $self->log_line("INFO: worker wallet env pid=$$ wallet_address=" . (defined($ENV{WALLET_ADDRESS}) ? "set" : "unset") . " private_key=" . ((defined($ENV{PRIVATE_KEY}) && $ENV{PRIVATE_KEY} ne "") ? "set" : "unset"));
 
     my $res;
     if ($task->{action} eq 'redeem') {

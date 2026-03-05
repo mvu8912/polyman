@@ -10,6 +10,8 @@ sub new {
     my $self = {
         signature_type => ($args{signature_type} // ''),
         page_size      => ($args{page_size} // 200),
+        private_key    => ($args{private_key} // $ENV{PRIVATE_KEY} // ''),
+        wallet_address => ($args{wallet_address} // $ENV{WALLET_ADDRESS} // ''),
     };
     return bless $self, $class;
 }
@@ -32,6 +34,42 @@ sub run_cmd_capture {
     return ($exit, $stdout, $stderr);
 }
 
+sub _wallet_env_overrides {
+    my ($self) = @_;
+
+    my %env;
+    if (defined $self->{private_key} && $self->{private_key} ne '') {
+        $env{POLYMARKET_PRIVATE_KEY} = $self->{private_key};
+    }
+    if (defined $self->{wallet_address} && $self->{wallet_address} ne '') {
+        $env{POLYMARKET_WALLET_ADDRESS} = $self->{wallet_address};
+    }
+    return \%env;
+}
+
+sub _run_cmd_with_env {
+    my ($self, $env_overrides, @cmd) = @_;
+    my $old = {};
+
+    for my $k (keys %$env_overrides) {
+        $old->{$k} = exists $ENV{$k} ? $ENV{$k} : undef;
+        $ENV{$k} = $env_overrides->{$k};
+    }
+
+    my @res = $self->run_cmd_capture(@cmd);
+
+    for my $k (keys %$env_overrides) {
+        if (defined $old->{$k}) {
+            $ENV{$k} = $old->{$k};
+        }
+        else {
+            delete $ENV{$k};
+        }
+    }
+
+    return @res;
+}
+
 sub polymarket_cmd_capture {
     my ($self, $needs_wallet, @args) = @_;
     my @cmd = ('polymarket');
@@ -39,7 +77,34 @@ sub polymarket_cmd_capture {
         push @cmd, ('--signature-type', $self->{signature_type});
     }
     push @cmd, @args;
-    return $self->run_cmd_capture(@cmd);
+
+    my $env_overrides = $needs_wallet ? $self->_wallet_env_overrides() : {};
+    my ($exit, $stdout, $stderr) = $self->_run_cmd_with_env($env_overrides, @cmd);
+
+    if ($needs_wallet
+        && defined($stderr)
+        && $stderr =~ /no wallet configured/i
+        && defined($self->{private_key})
+        && $self->{private_key} ne '') {
+        my @retry = ('polymarket');
+        push @retry, ('--signature-type', $self->{signature_type})
+          if defined $self->{signature_type} && $self->{signature_type} ne '';
+        push @retry, ('--private-key', $self->{private_key});
+        push @retry, @args;
+
+        my ($x, $o, $e) = $self->_run_cmd_with_env($env_overrides, @retry);
+        if ($x == 0) {
+            return ($x, $o, $e);
+        }
+
+        if (defined $e && $e =~ /unexpected argument '--private-key'|unrecognized option '--private-key'/i) {
+            return ($exit, $stdout, $stderr);
+        }
+
+        return ($x, $o, $e);
+    }
+
+    return ($exit, $stdout, $stderr);
 }
 
 sub wallet_address {
@@ -226,7 +291,9 @@ sub close_zero_value_position {
             push @attempts, { action => 'transfer', ok => JSON::PP::true };
             return { ok => JSON::PP::true, action => 'transfer', attempts => \@attempts };
         }
-        push @attempts, { action => 'transfer', ok => JSON::PP::false, error => $stderr || $stdout || 'transfer failed' };
+        my $te = $stderr || $stdout || 'transfer failed';
+        $te = 'transfer unsupported by polymarket cli' if $te =~ /unrecognized subcommand '\Qtransfer\E'|unrecognized subcommand 'transfer'/i;
+        push @attempts, { action => 'transfer', ok => JSON::PP::false, error => $te };
     }
 
     return {
