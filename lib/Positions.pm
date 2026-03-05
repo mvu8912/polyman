@@ -77,6 +77,82 @@ sub fetch_positions {
     return \@all;
 }
 
+sub token_dec_for_position {
+    my ($self, $p) = @_;
+    return undef unless ref($p) eq 'HASH';
+
+    my $condition_id = $p->{condition_id};
+    if (defined $condition_id && $condition_id ne '') {
+        my $tokens = $self->{market_tokens_cache}{$condition_id};
+        if (!defined $tokens) {
+            $tokens = eval { $self->_fetch_market_tokens($condition_id) };
+            $tokens = [] if $@ || ref($tokens) ne 'ARRAY';
+            $self->{market_tokens_cache}{$condition_id} = $tokens;
+        }
+
+        my $outcome = $p->{outcome};
+        if (defined $outcome && $outcome ne '') {
+            my $norm = lc($outcome);
+            $norm =~ s/^\s+|\s+$//g;
+            for my $t (@$tokens) {
+                next unless ref($t) eq 'HASH';
+                next unless defined $t->{outcome};
+                my $to = lc($t->{outcome});
+                $to =~ s/^\s+|\s+$//g;
+                my $id = $t->{token_id};
+                return $id if $to eq $norm && _is_token_id($id);
+            }
+        }
+
+        my $idx = $p->{outcome_index};
+        if (defined $idx && $idx =~ /^\d+$/) {
+            for my $t (@$tokens) {
+                next unless ref($t) eq 'HASH';
+                my $ti = $t->{outcome_index};
+                my $id = $t->{token_id};
+                return $id if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && _is_token_id($id);
+            }
+        }
+
+        # Conservative fallback: if only one token exists, use it.
+        if (@$tokens == 1 && ref($tokens->[0]) eq 'HASH') {
+            my $id = $tokens->[0]{token_id};
+            return $id if _is_token_id($id);
+        }
+    }
+
+    for my $k (qw(clob_token_id asset_id token_id)) {
+        my $v = $p->{$k};
+        return $v if _is_token_id($v);
+    }
+
+    return undef;
+}
+
+sub _is_token_id {
+    my ($v) = @_;
+    return 0 unless defined $v;
+    return 1 if $v =~ /^\d+$/;
+    return 1 if $v =~ /^0x[0-9a-fA-F]+$/;
+    return 0;
+}
+
+sub _fetch_market_tokens {
+    my ($self, $condition_id) = @_;
+
+    my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
+        0,
+        '-o', 'json', 'clob', 'market', $condition_id,
+    );
+    die "Failed: polymarket clob market\n$stderr\n" if $exit != 0;
+
+    my $obj = $self->json_decode($stdout);
+    return [] unless ref($obj) eq 'HASH';
+    my $tokens = $obj->{tokens};
+    return [] unless ref($tokens) eq 'ARRAY';
+    return $tokens;
+}
+
 sub market_sell {
     my ($self, %args) = @_;
     my $token_dec = $args{token_dec};
