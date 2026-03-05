@@ -104,6 +104,23 @@ sub _looks_like_loser {
     return 0;
 }
 
+sub _wallet_actions_available {
+    my ($self) = @_;
+
+    my $api = $self->{positions_api};
+    return 1 unless $api && $api->can('wallet_address');
+
+    my $ok = eval { $api->wallet_address(); 1 };
+    if (!$ok) {
+        my $err = $@ || 'wallet unavailable';
+        $err =~ s/\s+$//;
+        $self->log_line("WARN: action wallet unavailable: $err");
+        return 0;
+    }
+
+    return 1;
+}
+
 sub poll_interval_s { return $_[0]{cfg}{poll_interval_s}; }
 sub wallet          { return $_[0]{wallet}; }
 
@@ -569,6 +586,8 @@ sub run_iteration {
 
     return unless defined $wallet && $wallet ne '';
 
+    my $can_run_wallet_actions = $self->_wallet_actions_available();
+
     my %seen;
 
     for my $p (@$positions) {
@@ -593,7 +612,8 @@ sub run_iteration {
         my $token_dec = $self->_resolve_token_dec($p);
         my $has_token_dec = _is_token_id($token_dec);
 
-        if ($self->{cfg}{close_on_redeemable}
+        if ($can_run_wallet_actions
+            && $self->{cfg}{close_on_redeemable}
             && ($p->{redeemable} ? 1 : 0)
             && !$self->_looks_like_loser($p)
             && !$self->_task_is_busy($s, 'redeem')
@@ -604,7 +624,11 @@ sub run_iteration {
             next;
         }
 
-        if (defined $current_value && $current_value <= 0 && !$self->_task_is_busy($s, 'close_loser') && !($s->{done}{close_loser} ? 1 : 0)) {
+        if ($can_run_wallet_actions
+            && defined $current_value
+            && $current_value <= 0
+            && !$self->_task_is_busy($s, 'close_loser')
+            && !($s->{done}{close_loser} ? 1 : 0)) {
             my $task = $self->_build_task(
                 action       => 'close_loser',
                 position_key => $key,
@@ -617,6 +641,7 @@ sub run_iteration {
             next;
         }
 
+        next unless $can_run_wallet_actions;
         next unless $has_token_dec;
 
         # trailing stop is only for open/active positions still with value.
