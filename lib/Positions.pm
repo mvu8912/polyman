@@ -193,6 +193,70 @@ sub redeem_condition {
     return { ok => JSON::PP::true, response => $resp };
 }
 
+sub _u256_to_dec_string {
+    my ($self, $id) = @_;
+    return undef unless defined $id;
+    return $id if $id =~ /^\d+$/;
+    return undef unless $id =~ /^0x[0-9a-fA-F]+$/;
+
+    require Math::BigInt;
+    my $n = Math::BigInt->from_hex($id);
+    return $n->bstr();
+}
+
+sub _sweep_outcome_token {
+    my ($self, %args) = @_;
+
+    my $token_dec = $args{token_dec};
+    my $amount    = $args{amount};
+    my $to        = $args{sweep_to};
+
+    my $rpc = $ENV{RPC_URL} // '';
+    my $pk  = $ENV{PRIVATE_KEY} // '';
+    return { ok => JSON::PP::false, error => 'missing RPC_URL/PRIVATE_KEY for sweep' }
+      if $rpc eq '' || $pk eq '';
+
+    my $from = $ENV{WALLET_ADDRESS};
+    if (!defined $from || $from !~ /^0x[0-9a-fA-F]{40}$/) {
+        $from = eval { $self->wallet_address() };
+    }
+    return { ok => JSON::PP::false, error => 'wallet address unavailable for sweep' }
+      unless defined $from && $from =~ /^0x[0-9a-fA-F]{40}$/;
+
+    my $token_u256 = $self->_u256_to_dec_string($token_dec);
+    return { ok => JSON::PP::false, error => 'invalid token id for sweep' }
+      unless defined $token_u256;
+
+    my $ctf_erc1155 = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+
+    my ($exit, $stdout, $stderr) = $self->run_cmd_capture(
+        'cast', 'send',
+        '--rpc-url', $rpc,
+        '--private-key', $pk,
+        $ctf_erc1155,
+        'safeTransferFrom(address,address,uint256,uint256,bytes)',
+        $from,
+        $to,
+        $token_u256,
+        $amount,
+        '0x',
+    );
+
+    if ($exit != 0) {
+        return {
+            ok    => JSON::PP::false,
+            error => $stderr || $stdout || 'sweep transfer failed',
+        };
+    }
+
+    my $raw = $stdout // '';
+    $raw =~ s/^\s+|\s+$//g;
+    return {
+        ok       => JSON::PP::true,
+        response => { raw => $raw },
+    };
+}
+
 # Best-effort close-out for loser/zero-value positions.
 # Order: sell (if possible) -> redeem (if condition available) -> transfer/sweep (if configured).
 sub close_zero_value_position {
@@ -218,15 +282,9 @@ sub close_zero_value_position {
     }
 
     if (defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount) {
-        my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
-            1,
-            '-o', 'json', 'ctf', 'transfer', '--token', $token_dec, '--amount', $amount, '--to', $sweep_to,
-        );
-        if ($exit == 0) {
-            push @attempts, { action => 'transfer', ok => JSON::PP::true };
-            return { ok => JSON::PP::true, action => 'transfer', attempts => \@attempts };
-        }
-        push @attempts, { action => 'transfer', ok => JSON::PP::false, error => $stderr || $stdout || 'transfer failed' };
+        my $sw = $self->_sweep_outcome_token(token_dec => $token_dec, amount => $amount, sweep_to => $sweep_to);
+        push @attempts, { action => 'sweep', %$sw };
+        return { ok => JSON::PP::true, action => 'sweep', attempts => \@attempts } if $sw->{ok};
     }
 
     return {

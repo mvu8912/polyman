@@ -87,4 +87,49 @@ is(
     'token_dec_for_position falls back to clob_token_id when market lookup fails',
 );
 
+
+{
+    package TestPositionsSweep;
+    use parent 'Positions';
+    sub new { bless { cmd_calls => [] }, shift }
+    sub run_cmd_capture {
+        my ($self, @cmd) = @_;
+        push @{ $self->{cmd_calls} }, \@cmd;
+        return (0, "0xtxhash
+", '');
+    }
+    sub wallet_address { return '0x1111111111111111111111111111111111111111'; }
+}
+
+{
+    local $ENV{RPC_URL} = 'http://rpc.local';
+    local $ENV{PRIVATE_KEY} = '0x' . ('1' x 64);
+    local $ENV{WALLET_ADDRESS} = '0x1111111111111111111111111111111111111111';
+
+    my $ps = TestPositionsSweep->new;
+    my $sw = $ps->_sweep_outcome_token(
+        token_dec => '0xcb2c8ca36d7a765f04440834778b68d910e44d4d277f0792f012db64f0f94ac8',
+        amount    => '200',
+        sweep_to  => '0x8A218961b5d0E172182Fbadd3A3dC474fC8f95Dd',
+    );
+    ok($sw->{ok}, 'sweep helper succeeds with cast send');
+    is($ps->{cmd_calls}[0][0], 'cast', 'sweep uses cast command');
+    is($ps->{cmd_calls}[0][1], 'send', 'sweep uses cast send');
+}
+
+{
+    local $ENV{RPC_URL} = '';
+    local $ENV{PRIVATE_KEY} = '';
+
+    my $ps = TestPositionsSweep->new;
+    my $sw = $ps->_sweep_outcome_token(
+        token_dec => '123',
+        amount    => '1',
+        sweep_to  => '0x8A218961b5d0E172182Fbadd3A3dC474fC8f95Dd',
+    );
+    ok(!$sw->{ok}, 'sweep helper fails clearly when rpc/key missing');
+    like($sw->{error}, qr/missing RPC_URL\/PRIVATE_KEY/, 'sweep error explains missing env');
+}
+
+
 done_testing();
