@@ -35,6 +35,8 @@ sub new_from_env {
             worker_max_retries => _env_num('WORKER_MAX_RETRIES', 2),
             loser_sweep_to    => ($ENV{LOSER_SWEEP_TO} // ''),
             result_dir        => ($ENV{RESULT_DIR} // '/tmp/polyman-results'),
+            post_action_verify_timeout_s  => _env_num('POST_ACTION_VERIFY_TIMEOUT_S', 60),
+            post_action_verify_interval_s => _env_num('POST_ACTION_VERIFY_INTERVAL_S', 5),
         },
         pending_tasks  => [],
         active_workers => {},
@@ -313,6 +315,93 @@ sub _task_has_progress {
     return 0;
 }
 
+sub _summarize_task_error {
+    my ($self, $res) = @_;
+    return 'worker failed' unless ref($res) eq 'HASH';
+
+    my $err = $res->{error};
+    $err = '' unless defined $err;
+
+    my $attempts = $res->{attempts};
+    if (ref($attempts) eq 'ARRAY' && @$attempts) {
+        my @parts;
+        for my $a (@$attempts) {
+            next unless ref($a) eq 'HASH';
+            my $name = $a->{action} // 'unknown';
+            my $ok = $a->{ok} ? 'ok' : 'fail';
+            my $ae = $a->{error};
+            $ae = '' unless defined $ae;
+            $ae =~ s/\s+/ /g;
+            $ae =~ s/^\s+|\s+$//g;
+            push @parts, ($ae ne '' ? "$name:$ok:$ae" : "$name:$ok");
+        }
+        if (@parts) {
+            my $suffix = join(' | ', @parts);
+            return $err ne '' ? "$err [$suffix]" : $suffix;
+        }
+    }
+
+    return $err ne '' ? $err : 'worker failed';
+}
+
+sub _task_position_gone {
+    my ($self, $positions, $task) = @_;
+    return 0 unless ref($positions) eq 'ARRAY' && ref($task) eq 'HASH';
+
+    my $key = $task->{position_key};
+    return 0 unless defined $key && $key ne '';
+
+    for my $p (@$positions) {
+        next unless ref($p) eq 'HASH';
+        next unless ($self->position_key($p) // '') eq $key;
+
+        my $size = _num_or_undef($p->{size});
+        return 1 if !defined($size) || $size <= 0;
+
+        my $cv = _num_or_undef($p->{current_value});
+        return 1 if ($task->{action} // '') eq 'redeem' && defined($cv) && $cv <= 0;
+
+        return 0;
+    }
+
+    return 1;
+}
+
+sub _verify_task_effect {
+    my ($self, $api, $task) = @_;
+
+    my $wallet = $self->{wallet};
+    return (1, 'verify skipped: wallet unavailable') unless defined $wallet && $wallet ne '';
+
+    my $timeout  = $self->{cfg}{post_action_verify_timeout_s} // 60;
+    my $interval = $self->{cfg}{post_action_verify_interval_s} // 5;
+    $timeout = 0 + $timeout;
+    $interval = 0 + $interval;
+    $interval = 1 if $interval < 1;
+
+    my $deadline = time() + ($timeout > 0 ? $timeout : 0);
+    my $attempt = 0;
+
+    while (1) {
+        $attempt++;
+        my $positions = eval { $api->fetch_positions($wallet) };
+        if ($@) {
+            my $e = $@;
+            $e =~ s/\s+$//;
+            return (0, "post-action verify fetch failed: $e");
+        }
+
+        if ($self->_task_position_gone($positions, $task)) {
+            return (1, "verified position clear on attempt=$attempt");
+        }
+
+        last if $timeout <= 0 || time() >= $deadline;
+        select(undef, undef, undef, $interval);
+    }
+
+    return (0, "post-action verify timeout after ${timeout}s: position still present key=" . ($task->{position_key} // 'unknown'));
+}
+
 sub _run_task_in_child {
     my ($self, $task) = @_;
 
@@ -320,6 +409,9 @@ sub _run_task_in_child {
         signature_type => $self->{cfg}{signature_type},
         page_size      => $self->{cfg}{page_size},
     );
+
+    my $task_desc = JSON::PP->new->canonical->encode($task);
+    $self->log_line("INFO: worker starting pid=$$ task=$task_desc");
 
     my $res;
     if ($task->{action} eq 'redeem') {
@@ -337,18 +429,42 @@ sub _run_task_in_child {
         $res = $api->market_sell(token_dec => $task->{token_dec}, amount => $task->{amount});
     }
 
+    my $ok = $res->{ok} ? 1 : 0;
+    my $error = $ok ? undef : $self->_summarize_task_error($res);
+    my $verify_note;
+
+    if ($ok) {
+        my ($verified, $note) = $self->_verify_task_effect($api, $task);
+        $verify_note = $note;
+        if (!$verified) {
+            $ok = 0;
+            $error = $note;
+        }
+    }
+
     my $payload = {
-        task  => $task,
-        ok    => $res->{ok} ? JSON::PP::true : JSON::PP::false,
-        error => $res->{error},
-        ts    => now_utc(),
+        task        => $task,
+        ok          => $ok ? JSON::PP::true : JSON::PP::false,
+        error       => $error,
+        verify_note => $verify_note,
+        response    => $res->{response},
+        attempts    => $res->{attempts},
+        ts          => now_utc(),
     };
 
     my $path = $self->_child_result_path($$);
     open my $fh, '>', $path or exit 2;
     print $fh JSON::PP->new->utf8->canonical->encode($payload);
     close $fh;
-    exit($res->{ok} ? 0 : 1);
+
+    if ($ok) {
+        $self->log_line("INFO: worker finished pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " verify='" . ($verify_note // '') . "'");
+    }
+    else {
+        $self->log_line("WARN: worker failed pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " error='" . ($error // 'worker failed') . "'");
+    }
+
+    exit($ok ? 0 : 1);
 }
 
 sub dispatch_workers {
@@ -409,6 +525,7 @@ sub _is_permanent_task_failure {
 
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
+    return 1 if $r =~ /post-action verify timeout/;
 
     return 0;
 }
@@ -423,7 +540,7 @@ sub _retry_or_clear {
         my %new = %$task;
         $new{retries} = $retry;
         $self->enqueue_task(%new);
-        $self->log_line("WARN: retry task action=$action key=$key retry=$retry reason=$reason");
+        $self->log_line("WARN: retry task action=$action key=$key retry=$retry reason=$reason task=" . JSON::PP->new->canonical->encode($task));
         return;
     }
 
@@ -459,10 +576,11 @@ sub reap_workers {
             if (!$@ && ref($decoded) eq 'HASH') {
                 $self->_apply_task_result($decoded);
                 if ($decoded->{ok}) {
-                    $self->log_line("INFO: task done action=$task->{action} key=$task->{position_key}");
+                    $self->log_line("INFO: task done action=$task->{action} key=$task->{position_key}" . (defined $decoded->{verify_note} ? " verify=\"$decoded->{verify_note}\"" : ""));
                 }
                 else {
                     $self->_retry_or_clear($task, $decoded->{error} // 'worker failed');
+                    $self->log_line("WARN: task failed action=$task->{action} key=$task->{position_key} err=" . ($decoded->{error} // 'worker failed') . (defined $decoded->{verify_note} ? " verify=\"$decoded->{verify_note}\"" : ""));
                 }
             }
             else {
