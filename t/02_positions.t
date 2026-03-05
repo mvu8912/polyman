@@ -109,6 +109,20 @@ is(
     sub calls { return $_[0]{_calls}; }
 }
 
+{
+    package FallbackPositions;
+    use parent -norequire, 'CmdCapturePositions';
+
+    sub _sweep_transfer_via_raw_tx {
+        my ($self, %args) = @_;
+        $self->{_fallback_args} = \%args;
+        die "forced fallback failure\n" if $self->{_fallback_fail};
+        return '0xdeadbeef';
+    }
+
+    sub fallback_args { return $_[0]{_fallback_args}; }
+}
+
 my $p9 = CmdCapturePositions->new_with_results([
     [1, '', 'No wallet configured'],
     [0, '{"ok":true}', ''],
@@ -157,5 +171,46 @@ is($c11->{action}, 'transfer', 'prefer_sweep returns transfer action');
 my $first11 = join(' ', @{ $p11->calls->[0] });
 like($first11, qr/ctf transfer/, 'prefer_sweep tries transfer before redeem/sell');
 is(scalar @{ $p11->calls }, 1, 'prefer_sweep success does not call sell/redeem');
+
+my $p12 = FallbackPositions->new_with_results([
+    [1, '', "error: unrecognized subcommand 'transfer'"],
+],
+    signature_type => 'proxy',
+    private_key => '0xabc',
+    wallet_address => '0x1111111111111111111111111111111111111111',
+);
+my $x12 = $p12->close_zero_value_position(
+    token_dec => '123',
+    amount => '2.0',
+    condition_id => '0xcond',
+    sweep_to => '0x2222222222222222222222222222222222222222',
+    prefer_sweep => 1,
+);
+ok($x12->{ok}, 'transfer fallback can use raw tx when transfer subcommand is unavailable');
+is($x12->{action}, 'transfer', 'fallback still reports transfer action');
+is($x12->{attempts}[0]{method}, 'raw_tx', 'fallback method is raw tx');
+is($x12->{attempts}[0]{txhash}, '0xdeadbeef', 'fallback returns tx hash');
+is($p12->fallback_args->{token_dec}, '123', 'fallback called with token_dec');
+
+my $p13 = FallbackPositions->new_with_results([
+    [1, '', "error: unrecognized subcommand 'transfer'"],
+    [1, '', 'sell failed'],
+    [1, '', 'redeem failed'],
+    [1, '', "error: unrecognized subcommand 'transfer'"],
+],
+    signature_type => 'proxy',
+    private_key => '0xabc',
+    wallet_address => '0x1111111111111111111111111111111111111111',
+);
+$p13->{_fallback_fail} = 1;
+my $x13 = $p13->close_zero_value_position(
+    token_dec => '123',
+    amount => '2.0',
+    condition_id => '0xcond',
+    sweep_to => '0x2222222222222222222222222222222222222222',
+    prefer_sweep => 1,
+);
+ok(!$x13->{ok}, 'transfer fallback propagates failure when raw tx also fails');
+like($x13->{attempts}[0]{error}, qr/fallback failed: forced fallback failure/, 'fallback failure message included');
 
 done_testing();

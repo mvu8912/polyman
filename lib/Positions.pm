@@ -4,6 +4,10 @@ use warnings;
 
 use JSON::PP ();
 use Capture::Tiny qw(capture);
+use Math::BigInt;
+
+my $CTF_ERC1155 = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+my $CHAIN_ID_HEX = '0x89';
 
 sub new {
     my ($class, %args) = @_;
@@ -278,8 +282,147 @@ sub _transfer_outcome_token {
     return { ok => JSON::PP::true } if $exit == 0;
 
     my $te = $stderr || $stdout || 'transfer failed';
-    $te = 'transfer unsupported by polymarket cli' if $te =~ /unrecognized subcommand '\Qtransfer\E'|unrecognized subcommand 'transfer'/i;
+    if ($te =~ /unrecognized subcommand '\Qtransfer\E'|unrecognized subcommand 'transfer'/i) {
+        my $fallback = eval {
+            $self->_sweep_transfer_via_raw_tx(
+                token_dec => $token_dec,
+                amount    => $amount,
+                sweep_to  => $sweep_to,
+            );
+        };
+
+        return {
+            ok     => JSON::PP::true,
+            txhash => $fallback,
+            method => 'raw_tx',
+        } if defined $fallback && $fallback ne '';
+
+        my $fallback_err = $@ || '';
+        if ($fallback_err ne '') {
+            $fallback_err =~ s/\s+\z//;
+            return { ok => JSON::PP::false, error => "transfer unsupported by polymarket cli; fallback failed: $fallback_err" };
+        }
+        $te = 'transfer unsupported by polymarket cli';
+    }
     return { ok => JSON::PP::false, error => $te };
+}
+
+sub _load_eth_deps {
+    require Blockchain::Ethereum::ABI::Encoder;
+    require Blockchain::Ethereum::Key;
+    require Blockchain::Ethereum::Transaction::Legacy;
+}
+
+sub _rpc_call {
+    my ($self, $method, $params) = @_;
+
+    my $rpc = $ENV{RPC_URL} // '';
+    die "RPC_URL missing for raw transfer fallback\n" unless $rpc ne '';
+
+    my $payload = JSON::PP::encode_json({
+        jsonrpc => '2.0',
+        id      => 1,
+        method  => $method,
+        params  => $params,
+    });
+
+    my ($exit, $stdout, $stderr) = $self->run_cmd_capture(
+        'curl', '-sS', '-H', 'Content-Type: application/json', '--data', $payload, $rpc,
+    );
+    die "RPC call failed: $method\n$stderr\n" if $exit != 0;
+
+    my $obj = eval { JSON::PP::decode_json($stdout) };
+    die "RPC decode failed: $method\n$stdout\n" if $@ || ref($obj) ne 'HASH';
+    die "RPC error: $method\n" . JSON::PP::encode_json($obj->{error}) . "\n" if exists $obj->{error} && defined $obj->{error};
+    return $obj->{result};
+}
+
+sub _hex_to_bigint {
+    my ($hex) = @_;
+    $hex //= '0x0';
+    $hex =~ s/^0x//i;
+    return Math::BigInt->from_hex('0x' . ($hex eq '' ? '0' : $hex));
+}
+
+sub _bigint_to_hex {
+    my ($bi) = @_;
+    my $h = $bi->copy->as_hex();
+    $h =~ s/^\+//;
+    $h = lc($h);
+    return $h;
+}
+
+sub _token_id_to_hex {
+    my ($self, $token_dec) = @_;
+    return $token_dec if defined $token_dec && $token_dec =~ /^0x[0-9a-fA-F]+$/;
+
+    my $bi = Math::BigInt->new("$token_dec");
+    die "invalid token id: $token_dec\n" if !defined $bi;
+    return _bigint_to_hex($bi);
+}
+
+sub _sweep_transfer_via_raw_tx {
+    my ($self, %args) = @_;
+    _load_eth_deps();
+
+    my $token_hex = $self->_token_id_to_hex($args{token_dec});
+    my $amount    = $args{amount};
+    my $sweep_to  = $args{sweep_to};
+
+    my $pk = $self->{private_key} // '';
+    $pk =~ s/^0x//i;
+    die "private key missing for raw transfer fallback\n" unless $pk =~ /^[0-9a-fA-F]{64}$/;
+
+    my $from = $self->{wallet_address} // '';
+    die "wallet address missing for raw transfer fallback\n" unless $from =~ /^0x[0-9a-fA-F]{40}$/;
+
+    my $key = Blockchain::Ethereum::Key->new(private_key => pack('H*', $pk));
+    my $derived_from = '' . $key->address;
+    die "wallet address does not match private key ($derived_from)\n" unless lc($derived_from) eq lc($from);
+
+    my $token_dec_str = _hex_to_bigint($token_hex)->bstr();
+    my $enc = Blockchain::Ethereum::ABI::Encoder->new;
+    my $data = $enc->function('safeTransferFrom')
+      ->append(address => $from)
+      ->append(address => $sweep_to)
+      ->append(uint256 => $token_dec_str)
+      ->append(uint256 => "$amount")
+      ->append(bytes   => '00')
+      ->encode();
+
+    my $nonce = $self->_rpc_call('eth_getTransactionCount', [$from, 'pending']);
+    my $gas_price = $self->_rpc_call('eth_gasPrice', []);
+    my $estimate = $self->_rpc_call('eth_estimateGas', [{
+        from  => $from,
+        to    => $CTF_ERC1155,
+        value => '0x0',
+        data  => $data,
+    }]);
+
+    my $gas_limit_bi = _hex_to_bigint($estimate);
+    $gas_limit_bi->bmul(125);
+    $gas_limit_bi->bdiv(100);
+    my $gas_limit = _bigint_to_hex($gas_limit_bi);
+
+    my $tx = Blockchain::Ethereum::Transaction::Legacy->new(
+        nonce     => $nonce,
+        gas_price => $gas_price,
+        gas_limit => $gas_limit,
+        to        => $CTF_ERC1155,
+        value     => '0x0',
+        data      => $data,
+        chain_id  => $CHAIN_ID_HEX,
+    );
+    $key->sign_transaction($tx);
+
+    my $raw = $tx->serialize;
+    $raw =~ s/^\s+|\s+$//g;
+    if ($raw !~ /^0x[0-9a-fA-F]+$/) {
+        my $hex = unpack('H*', $raw);
+        $raw = '0x' . $hex;
+    }
+
+    return $self->_rpc_call('eth_sendRawTransaction', [$raw]);
 }
 
 # Best-effort close-out for loser/zero-value positions.
