@@ -483,7 +483,7 @@ sub _queue_position_tasks {
     my ($self, $p, $s, $key, $ts) = @_;
 
     my $size        = $p->{size};
-    my $token_dec   = $p->{asset_id};
+    my $token_dec   = $self->_resolve_token_dec($p);
     my $percent_pnl = $p->{percent_pnl};
 
     if (($self->{cfg}{tp1_trigger_pct} + 0) > 0
@@ -576,7 +576,7 @@ sub run_iteration {
         $s->{done} ||= {};
 
         my $current_value = _num_or_undef($p->{current_value});
-        my $token_dec = $p->{asset_id};
+        my $token_dec = $self->_resolve_token_dec($p);
         my $has_token_dec = defined $token_dec && $token_dec =~ /^\d+$/;
 
         if ($self->{cfg}{close_on_redeemable} && ($p->{redeemable} ? 1 : 0) && !$self->_task_is_busy($s, 'redeem') && !($s->{done}{redeem} ? 1 : 0)) {
@@ -631,6 +631,22 @@ sub run_iteration {
 
     $self->dispatch_workers();
     $self->save_state();
+}
+
+sub _resolve_token_dec {
+    my ($self, $p) = @_;
+
+    my $api = $self->{positions_api};
+    if ($api && $api->can('token_dec_for_position')) {
+        return $api->token_dec_for_position($p);
+    }
+
+    return undef unless ref($p) eq 'HASH';
+    for my $k (qw(asset_id token_id clob_token_id)) {
+        my $v = $p->{$k};
+        return $v if defined $v && $v =~ /^\d+$/;
+    }
+    return undef;
 }
 
 1;
