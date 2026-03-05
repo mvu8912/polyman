@@ -1,0 +1,12 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use FindBin qw($Bin);
+my @yml = qw( -f compose.yml );
+my $dir = "$Bin/../docker-compose-includes";
+opendir( my $dh, $dir ) or die $!;
+foreach ( readdir $dh ) {
+    next if $_ eq '.' || $_ eq '..';
+    push @yml, "-f", "$dir/$_";
+}
+exec qw(docker compose), @yml, @ARGV;

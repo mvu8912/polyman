@@ -1,0 +1,7 @@
+services:
+  polyman:
+    volumes:
+    - ./bin:/app/bin
+    - ./data:/data
+    - ./lib:/app/lib
+    - ./t:/app/t

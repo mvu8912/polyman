@@ -12,6 +12,6 @@ COPY cpanfile /app/cpanfile
 
 RUN cpanm --notest --installdeps .
 
-ENV STATE_FILE=/data/manager-state.json
+RUN apt update; apt install -y procps htop
 
 CMD sleep infinity

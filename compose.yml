@@ -1,8 +1,5 @@
 services:
   polyman:
-    build: .
-    image: michaelpc/polyman:latest
-    restart: unless-stopped
     environment:
       # required wallet/env keys
       WALLET_ADDRESS: ""
@@ -16,7 +13,7 @@ services:
       WORKER_COUNT: "2"
       WORKER_TIMEOUT_S: "30"
       WORKER_MAX_RETRIES: "2"
-      RESULT_DIR: "/tmp/polyman-results"
+      RESULT_DIR: "/data/polyman-results"
       LOSER_SWEEP_TO: ""
 
       # risk management
@@ -33,14 +30,3 @@ services:
 
       # redeem winners automatically
       CLOSE_ON_REDEEMABLE: "1"
-    volumes:
-    - ./bin:/app/bin
-    - ./data:/data
-    - ./lib:/app/lib
-    - ./t:/app/t
-    command:
-    - perl
-    - /app/bin/manager.pl
-
-include:
-- ./personal.yml

@@ -1,0 +1,6 @@
+services:
+  polyman:
+    build: .
+    image: michaelpc/polyman:latest
+    restart: unless-stopped
+    init: true
