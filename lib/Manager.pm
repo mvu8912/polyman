@@ -453,8 +453,41 @@ sub _run_task_in_child {
         my ($verified, $note) = $self->_verify_task_effect($api, $task);
         $verify_note = $note;
         if (!$verified) {
-            $ok = 0;
-            $error = $note;
+            if (($task->{action} // '') eq 'close_loser'
+                && defined($self->{cfg}{loser_sweep_to})
+                && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
+                && defined($task->{token_dec})
+                && defined($task->{amount})) {
+                my $sweep_res = $api->close_zero_value_position(
+                    token_dec    => $task->{token_dec},
+                    amount       => $task->{amount},
+                    condition_id => $task->{condition_id},
+                    sweep_to     => $self->{cfg}{loser_sweep_to},
+                    prefer_sweep => 1,
+                );
+
+                my $sweep_ok = $sweep_res->{ok} ? 1 : 0;
+                if ($sweep_ok) {
+                    my ($sweep_verified, $sweep_note) = $self->_verify_task_effect($api, $task);
+                    $verify_note = "redeem_verify_failed_then_sweep: " . ($sweep_note // '');
+                    if ($sweep_verified) {
+                        $ok = 1;
+                        $error = undef;
+                    }
+                    else {
+                        $ok = 0;
+                        $error = $sweep_note;
+                    }
+                }
+                else {
+                    $ok = 0;
+                    $error = ($note // 'post-action verify failed') . '; sweep retry failed: ' . $self->_summarize_task_error($sweep_res);
+                }
+            }
+            else {
+                $ok = 0;
+                $error = $note;
+            }
         }
     }
 

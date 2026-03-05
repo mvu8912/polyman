@@ -138,4 +138,24 @@ $p10->market_sell(token_dec => '123', amount => '1.0');
 is((exists $ENV{POLYMARKET_PRIVATE_KEY} ? $ENV{POLYMARKET_PRIVATE_KEY} : undef), $old_pm_pk, 'POLYMARKET_PRIVATE_KEY restored after command');
 is((exists $ENV{POLYMARKET_WALLET_ADDRESS} ? $ENV{POLYMARKET_WALLET_ADDRESS} : undef), $old_pm_wa, 'POLYMARKET_WALLET_ADDRESS restored after command');
 
+my $p11 = CmdCapturePositions->new_with_results([
+    [0, '{"tx":"0x1"}', ''],
+],
+    signature_type => 'proxy',
+    private_key => '0xabc',
+    wallet_address => '0x1111111111111111111111111111111111111111',
+);
+my $c11 = $p11->close_zero_value_position(
+    token_dec => '123',
+    amount => '2.0',
+    condition_id => '0xcond',
+    sweep_to => '0x2222222222222222222222222222222222222222',
+    prefer_sweep => 1,
+);
+ok($c11->{ok}, 'prefer_sweep path can succeed via transfer first');
+is($c11->{action}, 'transfer', 'prefer_sweep returns transfer action');
+my $first11 = join(' ', @{ $p11->calls->[0] });
+like($first11, qr/ctf transfer/, 'prefer_sweep tries transfer before redeem/sell');
+is(scalar @{ $p11->calls }, 1, 'prefer_sweep success does not call sell/redeem');
+
 done_testing();

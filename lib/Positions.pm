@@ -258,6 +258,30 @@ sub redeem_condition {
     return { ok => JSON::PP::true, response => $resp };
 }
 
+sub _transfer_outcome_token {
+    my ($self, %args) = @_;
+
+    my $token_dec = $args{token_dec};
+    my $amount    = $args{amount};
+    my $sweep_to  = $args{sweep_to};
+
+    return {
+        ok    => JSON::PP::false,
+        error => 'missing sweep args',
+    } unless defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount;
+
+    my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
+        1,
+        '-o', 'json', 'ctf', 'transfer', '--token', $token_dec, '--amount', $amount, '--to', $sweep_to,
+    );
+
+    return { ok => JSON::PP::true } if $exit == 0;
+
+    my $te = $stderr || $stdout || 'transfer failed';
+    $te = 'transfer unsupported by polymarket cli' if $te =~ /unrecognized subcommand '\Qtransfer\E'|unrecognized subcommand 'transfer'/i;
+    return { ok => JSON::PP::false, error => $te };
+}
+
 # Best-effort close-out for loser/zero-value positions.
 # Order: sell (if possible) -> redeem (if condition available) -> transfer/sweep (if configured).
 sub close_zero_value_position {
@@ -267,8 +291,15 @@ sub close_zero_value_position {
     my $amount       = $args{amount};
     my $condition_id = $args{condition_id};
     my $sweep_to     = $args{sweep_to};
+    my $prefer_sweep = $args{prefer_sweep} ? 1 : 0;
 
     my @attempts;
+
+    if ($prefer_sweep && defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount) {
+        my $xfer = $self->_transfer_outcome_token(token_dec => $token_dec, amount => $amount, sweep_to => $sweep_to);
+        push @attempts, { action => 'transfer', %$xfer };
+        return { ok => JSON::PP::true, action => 'transfer', attempts => \@attempts } if $xfer->{ok};
+    }
 
     if (defined $token_dec && defined $amount) {
         my $sell = $self->market_sell(token_dec => $token_dec, amount => $amount);
@@ -283,17 +314,9 @@ sub close_zero_value_position {
     }
 
     if (defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount) {
-        my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
-            1,
-            '-o', 'json', 'ctf', 'transfer', '--token', $token_dec, '--amount', $amount, '--to', $sweep_to,
-        );
-        if ($exit == 0) {
-            push @attempts, { action => 'transfer', ok => JSON::PP::true };
-            return { ok => JSON::PP::true, action => 'transfer', attempts => \@attempts };
-        }
-        my $te = $stderr || $stdout || 'transfer failed';
-        $te = 'transfer unsupported by polymarket cli' if $te =~ /unrecognized subcommand '\Qtransfer\E'|unrecognized subcommand 'transfer'/i;
-        push @attempts, { action => 'transfer', ok => JSON::PP::false, error => $te };
+        my $xfer = $self->_transfer_outcome_token(token_dec => $token_dec, amount => $amount, sweep_to => $sweep_to);
+        push @attempts, { action => 'transfer', %$xfer };
+        return { ok => JSON::PP::true, action => 'transfer', attempts => \@attempts } if $xfer->{ok};
     }
 
     return {
@@ -303,5 +326,6 @@ sub close_zero_value_position {
         attempts => \@attempts,
     };
 }
+
 
 1;
