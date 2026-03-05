@@ -100,7 +100,7 @@ sub token_dec_for_position {
                 my $to = lc($t->{outcome});
                 $to =~ s/^\s+|\s+$//g;
                 my $id = $t->{token_id};
-                return $id if $to eq $norm && defined $id && $id =~ /^\d+$/;
+                return $id if $to eq $norm && _is_token_id($id);
             }
         }
 
@@ -110,23 +110,31 @@ sub token_dec_for_position {
                 next unless ref($t) eq 'HASH';
                 my $ti = $t->{outcome_index};
                 my $id = $t->{token_id};
-                return $id if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && defined $id && $id =~ /^\d+$/;
+                return $id if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && _is_token_id($id);
             }
         }
 
         # Conservative fallback: if only one token exists, use it.
         if (@$tokens == 1 && ref($tokens->[0]) eq 'HASH') {
             my $id = $tokens->[0]{token_id};
-            return $id if defined $id && $id =~ /^\d+$/;
+            return $id if _is_token_id($id);
         }
     }
 
     for my $k (qw(clob_token_id asset_id token_id)) {
         my $v = $p->{$k};
-        return $v if defined $v && $v =~ /^\d+$/;
+        return $v if _is_token_id($v);
     }
 
     return undef;
+}
+
+sub _is_token_id {
+    my ($v) = @_;
+    return 0 unless defined $v;
+    return 1 if $v =~ /^\d+$/;
+    return 1 if $v =~ /^0x[0-9a-fA-F]+$/;
+    return 0;
 }
 
 sub _fetch_market_tokens {

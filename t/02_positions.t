@@ -66,7 +66,7 @@ ok(!$r_bad->{ok}, 'redeem sad path');
 
 
 my $p7 = TestPositions->new_with_responses([
-    [0, '{"tokens":[{"outcome":"Yes","outcome_index":0,"token_id":"777"},{"outcome":"No","outcome_index":1,"token_id":"888"}]}', ''],
+    [0, '{"tokens":[{"outcome":"Yes","outcome_index":0,"token_id":"0xcb2c8ca36d7a765f04440834778b68d910e44d4d277f0792f012db64f0f94ac8"},{"outcome":"No","outcome_index":1,"token_id":"0xc30392f1548a7e43b61763e6b7a3d2631ef073835b19f133936e0f5683e9bd08"}]}', ''],
 ]);
 is(
     $p7->token_dec_for_position({
@@ -74,8 +74,8 @@ is(
         outcome => 'Yes',
         outcome_index => 0,
     }),
-    '777',
-    'token_dec_for_position resolves via condition_id + clob market tokens',
+    '0xcb2c8ca36d7a765f04440834778b68d910e44d4d277f0792f012db64f0f94ac8',
+    'token_dec_for_position resolves hex token_id via condition_id + clob market tokens',
 );
 
 my $p8 = TestPositions->new_with_responses([
