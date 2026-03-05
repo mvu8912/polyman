@@ -576,8 +576,8 @@ sub run_iteration {
         $s->{done} ||= {};
 
         my $current_value = _num_or_undef($p->{current_value});
-        my $token_dec   = $p->{asset_id};
-        next unless defined $token_dec && $token_dec =~ /^\d+$/;
+        my $token_dec = $p->{asset_id};
+        my $has_token_dec = defined $token_dec && $token_dec =~ /^\d+$/;
 
         if ($self->{cfg}{close_on_redeemable} && ($p->{redeemable} ? 1 : 0) && !$self->_task_is_busy($s, 'redeem') && !($s->{done}{redeem} ? 1 : 0)) {
             my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
@@ -590,7 +590,7 @@ sub run_iteration {
             my $task = $self->_build_task(
                 action       => 'close_loser',
                 position_key => $key,
-                token_dec    => $token_dec,
+                token_dec    => ($has_token_dec ? $token_dec : undef),
                 amount       => $size,
                 condition_id => $p->{condition_id},
             );
@@ -598,6 +598,8 @@ sub run_iteration {
             $s->{queued}{close_loser} = JSON::PP::true;
             next;
         }
+
+        next unless $has_token_dec;
 
         # trailing stop is only for open/active positions still with value.
         if (defined $current_value && $current_value > 0) {
