@@ -64,4 +64,27 @@ ok($r_ok->{ok}, 'redeem happy path');
 my $r_bad = $p6->redeem_condition(condition_id => '0xabc');
 ok(!$r_bad->{ok}, 'redeem sad path');
 
+
+my $p7 = TestPositions->new_with_responses([
+    [0, '{"tokens":[{"outcome":"Yes","outcome_index":0,"token_id":"777"},{"outcome":"No","outcome_index":1,"token_id":"888"}]}', ''],
+]);
+is(
+    $p7->token_dec_for_position({
+        condition_id => '0xcond',
+        outcome => 'Yes',
+        outcome_index => 0,
+    }),
+    '777',
+    'token_dec_for_position resolves via condition_id + clob market tokens',
+);
+
+my $p8 = TestPositions->new_with_responses([
+    [1, '', 'boom'],
+]);
+is(
+    $p8->token_dec_for_position({ condition_id => '0xcond', clob_token_id => '999' }),
+    '999',
+    'token_dec_for_position falls back to clob_token_id when market lookup fails',
+);
+
 done_testing();

@@ -81,43 +81,49 @@ sub token_dec_for_position {
     my ($self, $p) = @_;
     return undef unless ref($p) eq 'HASH';
 
-    for my $k (qw(asset_id token_id clob_token_id)) {
+    my $condition_id = $p->{condition_id};
+    if (defined $condition_id && $condition_id ne '') {
+        my $tokens = $self->{market_tokens_cache}{$condition_id};
+        if (!defined $tokens) {
+            $tokens = eval { $self->_fetch_market_tokens($condition_id) };
+            $tokens = [] if $@ || ref($tokens) ne 'ARRAY';
+            $self->{market_tokens_cache}{$condition_id} = $tokens;
+        }
+
+        my $outcome = $p->{outcome};
+        if (defined $outcome && $outcome ne '') {
+            my $norm = lc($outcome);
+            $norm =~ s/^\s+|\s+$//g;
+            for my $t (@$tokens) {
+                next unless ref($t) eq 'HASH';
+                next unless defined $t->{outcome};
+                my $to = lc($t->{outcome});
+                $to =~ s/^\s+|\s+$//g;
+                my $id = $t->{token_id};
+                return $id if $to eq $norm && defined $id && $id =~ /^\d+$/;
+            }
+        }
+
+        my $idx = $p->{outcome_index};
+        if (defined $idx && $idx =~ /^\d+$/) {
+            for my $t (@$tokens) {
+                next unless ref($t) eq 'HASH';
+                my $ti = $t->{outcome_index};
+                my $id = $t->{token_id};
+                return $id if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && defined $id && $id =~ /^\d+$/;
+            }
+        }
+
+        # Conservative fallback: if only one token exists, use it.
+        if (@$tokens == 1 && ref($tokens->[0]) eq 'HASH') {
+            my $id = $tokens->[0]{token_id};
+            return $id if defined $id && $id =~ /^\d+$/;
+        }
+    }
+
+    for my $k (qw(clob_token_id asset_id token_id)) {
         my $v = $p->{$k};
         return $v if defined $v && $v =~ /^\d+$/;
-    }
-
-    my $condition_id = $p->{condition_id};
-    return undef unless defined $condition_id && $condition_id ne '';
-
-    my $tokens = $self->{market_tokens_cache}{$condition_id};
-    if (!defined $tokens) {
-        $tokens = eval { $self->_fetch_market_tokens($condition_id) };
-        $tokens = [] if $@ || ref($tokens) ne 'ARRAY';
-        $self->{market_tokens_cache}{$condition_id} = $tokens;
-    }
-
-    my $outcome = $p->{outcome};
-    if (defined $outcome && $outcome ne '') {
-        my $norm = lc($outcome);
-        $norm =~ s/^\s+|\s+$//g;
-        for my $t (@$tokens) {
-            next unless ref($t) eq 'HASH';
-            next unless defined $t->{outcome};
-            my $to = lc($t->{outcome});
-            $to =~ s/^\s+|\s+$//g;
-            my $id = $t->{token_id};
-            return $id if $to eq $norm && defined $id && $id =~ /^\d+$/;
-        }
-    }
-
-    my $idx = $p->{outcome_index};
-    if (defined $idx && $idx =~ /^\d+$/) {
-        for my $t (@$tokens) {
-            next unless ref($t) eq 'HASH';
-            my $ti = $t->{outcome_index};
-            my $id = $t->{token_id};
-            return $id if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && defined $id && $id =~ /^\d+$/;
-        }
     }
 
     return undef;
