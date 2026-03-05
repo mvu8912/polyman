@@ -10,7 +10,8 @@ use Manager;
 
 sub main {
     my $manager = Manager->new_from_env();
-    $manager->log_line("Manager started for wallet=" . $manager->wallet . " poll=" . $manager->poll_interval_s . "s");
+    my $wallet = $manager->wallet // 'unconfigured';
+    $manager->log_line("Manager started for wallet=$wallet poll=" . $manager->poll_interval_s . "s");
 
     while (1) {
         eval { $manager->run_iteration(); };
