@@ -574,6 +574,7 @@ sub _is_permanent_task_failure {
 
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
+    return 1 if $r =~ /not enough balance\s*\/\s*allowance/;
     return 1 if $r =~ /post-action verify timeout/;
 
     return 0;
