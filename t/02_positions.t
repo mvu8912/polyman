@@ -169,6 +169,21 @@ $p10->market_sell(token_dec => '123', amount => '1.0');
 is((exists $ENV{POLYMARKET_PRIVATE_KEY} ? $ENV{POLYMARKET_PRIVATE_KEY} : undef), $old_pm_pk, 'POLYMARKET_PRIVATE_KEY restored after command');
 is((exists $ENV{POLYMARKET_WALLET_ADDRESS} ? $ENV{POLYMARKET_WALLET_ADDRESS} : undef), $old_pm_wa, 'POLYMARKET_WALLET_ADDRESS restored after command');
 
+
+my $p10b = CmdCapturePositions->new_with_results([
+    [1, 'raw-out', "raw-err"],
+],
+    signature_type => 'proxy',
+    private_key => '0xabc',
+    wallet_address => '0x1111111111111111111111111111111111111111',
+);
+my $sell_err_debug = $p10b->market_sell(token_dec => '123', amount => '1.0');
+ok(!$sell_err_debug->{ok}, 'market_sell returns failure when command exits non-zero');
+like($sell_err_debug->{error}, qr/Command debug:/, 'error includes command debug header');
+like($sell_err_debug->{error}, qr/cmd=polymarket --signature-type proxy -o json clob market-order --token 123 --side sell --amount 1\.00/, 'error includes rendered command and args');
+like($sell_err_debug->{error}, qr/stdout_raw=raw-out/, 'error includes raw stdout for debugging');
+like($sell_err_debug->{error}, qr/stderr_raw=raw-err/, 'error includes raw stderr for debugging');
+
 my $p11 = FallbackPositions->new_with_results([], 
     signature_type => 'proxy',
     private_key => '0xabc',

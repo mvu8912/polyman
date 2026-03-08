@@ -38,6 +38,48 @@ sub run_cmd_capture {
     return ($exit, $stdout, $stderr);
 }
 
+
+sub _shell_quote {
+    my ($v) = @_;
+    $v = '' unless defined $v;
+    return "''" if $v eq '';
+    return $v if $v !~ /[^A-Za-z0-9_\-\.:\/\@]/;
+    $v =~ s/'/'"'"'/g;
+    return "'$v'";
+}
+
+sub _cmd_debug_block {
+    my ($self, %args) = @_;
+    my $cmd = $args{cmd};
+    my $exit = $args{exit};
+    my $stdout = defined $args{stdout} ? $args{stdout} : '';
+    my $stderr = defined $args{stderr} ? $args{stderr} : '';
+
+    my $rendered = '';
+    if (ref($cmd) eq 'ARRAY') {
+        $rendered = join(' ', map { _shell_quote($_) } @$cmd);
+    }
+
+    my @lines;
+    push @lines, 'Command debug:';
+    push @lines, "  cmd=$rendered";
+    push @lines, "  exit=$exit";
+    push @lines, "  stdout_raw=$stdout";
+    push @lines, "  stderr_raw=$stderr";
+    return join("\n", @lines);
+}
+
+sub _append_debug_to_stderr {
+    my ($self, $stderr, %args) = @_;
+    my $block = $self->_cmd_debug_block(%args);
+    $stderr = '' unless defined $stderr;
+    if ($stderr ne '' && $stderr !~ /\n\z/) {
+        $stderr .= "\n";
+    }
+    $stderr .= $block;
+    return $stderr;
+}
+
 sub _wallet_env_overrides {
     my ($self) = @_;
 
@@ -102,10 +144,47 @@ sub polymarket_cmd_capture {
         }
 
         if (defined $e && $e =~ /unexpected argument '--private-key'|unrecognized option '--private-key'/i) {
+            if ($exit != 0) {
+                $stderr = $self->_append_debug_to_stderr(
+                    $stderr,
+                    cmd    => \@cmd,
+                    exit   => $exit,
+                    stdout => $stdout,
+                    stderr => $stderr,
+                );
+            }
             return ($exit, $stdout, $stderr);
         }
 
-        return ($x, $o, $e);
+        my $combined = '';
+        if (defined $e && $e ne '') {
+            $combined = $e;
+            $combined .= "\n" if $combined !~ /\n\z/;
+        }
+        $combined .= $self->_cmd_debug_block(
+            cmd    => \@cmd,
+            exit   => $exit,
+            stdout => $stdout,
+            stderr => $stderr,
+        );
+        $combined .= "\n" . $self->_cmd_debug_block(
+            cmd    => \@retry,
+            exit   => $x,
+            stdout => $o,
+            stderr => $e,
+        );
+
+        return ($x, $o, $combined);
+    }
+
+    if ($exit != 0) {
+        $stderr = $self->_append_debug_to_stderr(
+            $stderr,
+            cmd    => \@cmd,
+            exit   => $exit,
+            stdout => $stdout,
+            stderr => $stderr,
+        );
     }
 
     return ($exit, $stdout, $stderr);

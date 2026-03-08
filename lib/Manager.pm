@@ -572,9 +572,17 @@ sub _is_permanent_task_failure {
     my ($self, $action, $reason) = @_;
     my $r = lc(($reason // ''));
 
+    my $is_sell_action = ($action eq 'tp1'
+        || $action eq 'tp2'
+        || $action eq 'stop_hit'
+        || $action eq 'max_loss');
+
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
     return 1 if $r =~ /post-action verify timeout/;
+    return 1 if $is_sell_action
+        && $r =~ /not enough balance\s*\/\s*allowance/
+        && $r =~ /approve set/;
 
     return 0;
 }
@@ -598,8 +606,9 @@ sub _retry_or_clear {
     if (defined $key && exists $self->{state}{positions}{$key}) {
         delete $self->{state}{positions}{$key}{queued}{$action};
 
-        my $mark_done = $is_permanent ? 1 : 0;
-        $mark_done = 1 if !$is_permanent && ($action eq 'close_loser' || $action eq 'redeem');
+        my $mark_done = 0;
+        $mark_done = 1 if $action eq 'close_loser' || $action eq 'redeem';
+        $mark_done = 1 if $is_permanent && $action ne 'tp1' && $action ne 'tp2' && $action ne 'stop_hit' && $action ne 'max_loss';
 
         if ($mark_done) {
             $self->{state}{positions}{$key}{done} ||= {};
