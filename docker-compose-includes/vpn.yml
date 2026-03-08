@@ -1,0 +1,16 @@
+services:
+  polyman:
+    network_mode: service:vpn
+  vpn:
+    image: ghcr.io/bubuntux/nordvpn
+    environment:                # Review https://github.com/bubuntux/nordvpn#environment-variables
+      TOKEN: e9f2abf2fd7c946577a66756d65982a3f21cd05152de127fafc3473af5eaf000
+      CONNECT: Norway
+      TECHNOLOGY: NordLynx
+      DNS: 127.0.0.11
+      NETWORK: 172.18.0.0/16
+    cap_add:
+    - NET_ADMIN               # Required
+    - NET_RAW                 # Required
+    sysctls:
+    - net.ipv6.conf.all.disable_ipv6=1  

@@ -1,0 +1,4 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+exec qw( docker-compose logs polyman -tf --tail=100 );

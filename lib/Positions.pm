@@ -241,7 +241,7 @@ sub market_sell {
 
     my @cmd = (
         '-o', 'json', 'clob', 'market-order',
-        '--token', $token_dec, '--side', 'sell', '--amount', $amount,
+        '--token', $token_dec, '--side', 'sell', '--amount', sprintf '%.2f', $amount,
     );
 
     my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(1, @cmd);
