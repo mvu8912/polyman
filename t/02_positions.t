@@ -55,6 +55,23 @@ my $sell_err = $p5->market_sell(token_dec => '123', amount => '1.0');
 ok(!$sell_err->{ok}, 'market_sell sad path');
 like($sell_err->{error}, qr/No book/, 'market_sell returns error');
 
+my $p5b = TestPositions->new_with_responses([
+    [1, '', '{"error":"not enough balance / allowance"}'],
+    [0, 'Balance allowance updated.', ''],
+    [0, '{"status":"ok"}', ''],
+]);
+my $sell_recover = $p5b->market_sell(token_dec => '123', amount => '1.0');
+ok($sell_recover->{ok}, 'market_sell retries after balance/allowance sync');
+
+my $p5c = TestPositions->new_with_responses([
+    [1, '', '{"error":"not enough balance / allowance"}'],
+    [0, 'Balance allowance updated.', ''],
+    [1, '', '{"error":"not enough balance / allowance"}'],
+]);
+my $sell_needs_approval = $p5c->market_sell(token_dec => '123', amount => '1.0');
+ok(!$sell_needs_approval->{ok}, 'market_sell still fails when approval is truly missing');
+like($sell_needs_approval->{error}, qr/polymarket approve set/, 'market_sell provides approve hint on persistent allowance failure');
+
 my $p6 = TestPositions->new_with_responses([
     [0, '{"redeemed":true}', ''],
     [1, '', 'redeem failed'],

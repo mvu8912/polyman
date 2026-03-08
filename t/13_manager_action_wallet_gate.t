@@ -49,6 +49,12 @@ $m->_retry_or_clear({ action => 'tp1', position_key => 'c1:YES', retries => 0 },
 is(scalar @{ $m->{pending_tasks} }, 1, 'non-permanent failures still retry');
 is($m->{pending_tasks}[0]{retries}, 1, 'retry counter incremented for non-permanent failure');
 
+
+$m->{state}{positions}{'c1:YES'}{queued}{stop_hit} = JSON::PP::true;
+$m->_retry_or_clear({ action => 'stop_hit', position_key => 'c1:YES', retries => 0 }, 'Status: error(400 Bad Request) making POST call to /order with {"error":"not enough balance / allowance"}');
+is(scalar @{ $m->{pending_tasks} }, 2, 'balance/allowance error remains retryable while bot attempts recovery');
+is($m->{pending_tasks}[-1]{action}, 'stop_hit', 'stop_hit task requeued on balance/allowance error');
+
 my $m2 = bless {
     cfg => {
         state_file => $state_path,

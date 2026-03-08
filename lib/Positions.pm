@@ -222,6 +222,18 @@ sub _fetch_market_tokens {
     return $tokens;
 }
 
+sub _sync_conditional_balance_allowance {
+    my ($self, $token_dec) = @_;
+    return unless defined $token_dec;
+
+    $self->polymarket_cmd_capture(
+        1,
+        'clob', 'update-balance',
+        '--asset-type', 'conditional',
+        '--token', $token_dec,
+    );
+}
+
 sub market_sell {
     my ($self, %args) = @_;
     my $token_dec = $args{token_dec};
@@ -233,6 +245,19 @@ sub market_sell {
     );
 
     my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(1, @cmd);
+    if ($exit != 0
+        && defined($stderr)
+        && $stderr =~ /not enough balance\s*\/\s*allowance/i) {
+        $self->_sync_conditional_balance_allowance($token_dec);
+        ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(1, @cmd);
+
+        if ($exit != 0
+            && defined($stderr)
+            && $stderr =~ /not enough balance\s*\/\s*allowance/i) {
+            $stderr .= "\nHint: run `polymarket approve set` once for this wallet and token approvals.";
+        }
+    }
+
     return {
         ok    => JSON::PP::false,
         error => $stderr || 'sell failed',
