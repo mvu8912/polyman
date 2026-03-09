@@ -594,6 +594,7 @@ sub _is_permanent_task_failure {
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
     return 1 if $r =~ /post-action verify timeout/;
+    return 1 if $action eq 'redeem' && $r =~ /redeem positions failed/;
     return 1 if $is_sell_action
         && $r =~ /not enough balance\s*\/\s*allowance/
         && $r =~ /approve set/;
@@ -632,6 +633,21 @@ sub _retry_or_clear {
 
     my $tag = $is_permanent ? 'permanent failure' : 'retry limit reached';
     $self->log_line("ERR: giving up task action=$action key=$key reason=$reason detail=$tag");
+
+    if ($action eq 'redeem' && ($reason // '') ne '') {
+        my $task_json = eval { JSON::PP->new->canonical->encode($task) };
+        $task_json = '{}' if $@;
+
+        my $state_json = '{}';
+        if (defined $key && exists $self->{state}{positions}{$key}) {
+            $state_json = eval { JSON::PP->new->canonical->encode($self->{state}{positions}{$key}) };
+            $state_json = '{}' if $@;
+        }
+
+        $self->log_line(
+            "WARN: redeem task diagnostic key=$key action=$action reason=$reason task=$task_json state=$state_json"
+        );
+    }
 }
 
 sub reap_workers {
