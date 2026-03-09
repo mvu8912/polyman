@@ -425,15 +425,19 @@ sub _task_position_gone {
     my $key = $task->{position_key};
     return 0 unless defined $key && $key ne '';
 
+    my $action = $task->{action} // '';
+
     for my $p (@$positions) {
         next unless ref($p) eq 'HASH';
         next unless ($self->position_key($p) // '') eq $key;
 
+        if ($action eq 'redeem') {
+            my $redeemable = $p->{redeemable} ? 1 : 0;
+            return $redeemable ? 0 : 1;
+        }
+
         my $size = _num_or_undef($p->{size});
         return 1 if !defined($size) || $size <= 0;
-
-        my $cv = _num_or_undef($p->{current_value});
-        return 1 if ($task->{action} // '') eq 'redeem' && defined($cv) && $cv <= 0;
 
         return 0;
     }

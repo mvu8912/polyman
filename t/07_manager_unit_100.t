@@ -104,4 +104,21 @@ $busy_close->_queue_position_tasks(
 );
 is(scalar @{ $busy_close->{pending_tasks} }, 0, 'no tp/stop tasks queued while close_loser is busy');
 
+
+
+# redeem verification should not treat size=0/current_value=0 as clear when still redeemable
+my $redeem_task = { action => 'redeem', position_key => 'condR:Up', retries => 0 };
+ok(
+    !$m->_task_position_gone([
+        { condition_id => 'condR', outcome => 'Up', size => 0, current_value => 0, redeemable => JSON::PP::true }
+    ], $redeem_task),
+    'redeem verify keeps waiting while position remains redeemable',
+);
+ok(
+    $m->_task_position_gone([
+        { condition_id => 'condR', outcome => 'Up', size => 0, current_value => 0, redeemable => JSON::PP::false }
+    ], $redeem_task),
+    'redeem verify succeeds once position is no longer redeemable',
+);
+
 done_testing();
