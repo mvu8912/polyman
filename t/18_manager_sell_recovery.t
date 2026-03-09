@@ -45,6 +45,15 @@ my $task = {
     index_set    => 1,
 };
 
+my $redeem_task = {
+    action       => 'redeem',
+    token_dec    => '123',
+    amount       => '1.0',
+    condition_id => '0xabc',
+    position_key => '0xabc:Up',
+    index_set    => 1,
+};
+
 {
     no warnings 'redefine';
     local *Manager::_verify_task_effect = sub {
@@ -100,6 +109,30 @@ my $task = {
     my $res = $m->_execute_task_with_recovery($api, $task);
     ok(!$res->{ok}, 'redeem success with verify timeout still fails task');
     like($res->{error}, qr/post-action verify timeout/, 'verify timeout is preserved as failure reason');
+}
+
+{
+    no warnings 'redefine';
+    my $call = 0;
+    local *Manager::_verify_task_effect = sub {
+        my ($self, $api, $task) = @_;
+        $call++;
+        return $call == 1
+            ? (0, 'post-action verify timeout after 60s: position still present key=0xabc:Up')
+            : (1, 'verified position clear on attempt=1');
+    };
+
+    my $api = FakeAPI->new(
+        sell_responses   => [],
+        redeem_responses => [ { ok => JSON::PP::true, response => { redeemed => JSON::PP::true } } ],
+        sweep_responses  => [ { ok => JSON::PP::true, response => { tx => '0x2' } } ],
+    );
+
+    my $res = $m->_execute_task_with_recovery($api, $redeem_task);
+    ok($res->{ok}, 'redeem verify-timeout falls back to sweep transfer and can recover');
+    like($res->{verify_note}, qr/redeem_verify_failed_then_sweep/, 'verify note records redeem->sweep path');
+    is($res->{res}{attempts}[0]{action}, 'redeem', 'first attempt is redeem');
+    is($res->{res}{attempts}[1]{action}, 'transfer', 'second attempt is transfer sweep');
 }
 
 done_testing;
