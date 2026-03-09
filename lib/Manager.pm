@@ -753,7 +753,9 @@ sub _is_permanent_task_failure {
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
     return 1 if $r =~ /post-action verify timeout/;
-    return 1 if $action eq 'redeem' && $r =~ /redeem positions failed/;
+    # Redeem API failures can be transient (index-set race, not-yet-settled state,
+    # or upstream service hiccups), so allow normal retry policy instead of
+    # forcing permanent failure on the first error.
     return 1 if $is_sell_action
         && $r =~ /not enough balance\s*\/\s*allowance/
         && $r =~ /approve set/;
