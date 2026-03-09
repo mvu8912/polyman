@@ -508,11 +508,46 @@ sub _run_task_in_child {
     $self->log_line("INFO: worker starting pid=$$ task=$task_desc");
     $self->log_line("INFO: worker wallet env pid=$$ wallet_address=" . (defined($ENV{WALLET_ADDRESS}) ? "set" : "unset") . " private_key=" . ((defined($ENV{PRIVATE_KEY}) && $ENV{PRIVATE_KEY} ne "") ? "set" : "unset"));
 
+    my $exec = $self->_execute_task_with_recovery($api, $task);
+    my $res = $exec->{res};
+    my $ok = $exec->{ok};
+    my $error = $exec->{error};
+    my $verify_note = $exec->{verify_note};
+
+    my $payload = {
+        task        => $task,
+        ok          => $ok ? JSON::PP::true : JSON::PP::false,
+        error       => $error,
+        verify_note => $verify_note,
+        response    => $res->{response},
+        attempts    => $res->{attempts},
+        ts          => now_utc(),
+    };
+
+    my $path = $self->_child_result_path($$);
+    open my $fh, '>', $path or exit 2;
+    print $fh JSON::PP->new->utf8->canonical->encode($payload);
+    close $fh;
+
+    if ($ok) {
+        $self->log_line("INFO: worker finished pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " verify='" . ($verify_note // '') . "'");
+    }
+    else {
+        $self->log_line("WARN: worker failed pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " error='" . ($error // 'worker failed') . "'");
+    }
+
+    exit($ok ? 0 : 1);
+}
+
+sub _execute_task_with_recovery {
+    my ($self, $api, $task) = @_;
+    my $action = $task->{action} // '';
+
     my $res;
-    if ($task->{action} eq 'redeem') {
+    if ($action eq 'redeem') {
         $res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
     }
-    elsif ($task->{action} eq 'close_loser') {
+    elsif ($action eq 'close_loser') {
         $res = $api->close_zero_value_position(
             token_dec    => $task->{token_dec},
             amount       => $task->{amount},
@@ -527,6 +562,69 @@ sub _run_task_in_child {
     my $ok = $res->{ok} ? 1 : 0;
     my $error = $ok ? undef : $self->_summarize_task_error($res);
     my $verify_note;
+
+    if (!$ok && ($action eq 'tp1' || $action eq 'tp2' || $action eq 'stop_hit' || $action eq 'max_loss')) {
+        if (defined($task->{condition_id}) && $task->{condition_id} ne '') {
+            my $redeem_res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
+            if ($redeem_res->{ok}) {
+                my ($redeem_verified, $redeem_note) = $self->_verify_task_effect($api, $task);
+                $verify_note = "sell_failed_then_redeem: " . ($redeem_note // '');
+                if ($redeem_verified) {
+                    return {
+                        ok         => 1,
+                        error      => undef,
+                        verify_note=> $verify_note,
+                        res        => { ok => JSON::PP::true, response => $redeem_res->{response}, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res } ] },
+                    };
+                }
+
+                return {
+                    ok          => 0,
+                    error       => $redeem_note,
+                    verify_note => $verify_note,
+                    res         => { ok => JSON::PP::false, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res } ] },
+                };
+            }
+
+            if (defined($self->{cfg}{loser_sweep_to})
+                && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
+                && defined($task->{token_dec})
+                && defined($task->{amount})) {
+                my $sweep_res = $api->close_zero_value_position(
+                    token_dec    => $task->{token_dec},
+                    amount       => $task->{amount},
+                    condition_id => $task->{condition_id},
+                    sweep_to     => $self->{cfg}{loser_sweep_to},
+                    prefer_sweep => 1,
+                );
+                if ($sweep_res->{ok}) {
+                    my ($sweep_verified, $sweep_note) = $self->_verify_task_effect($api, $task);
+                    $verify_note = "sell_redeem_failed_then_sweep: " . ($sweep_note // '');
+                    if ($sweep_verified) {
+                        return {
+                            ok          => 1,
+                            error       => undef,
+                            verify_note => $verify_note,
+                            res         => { ok => JSON::PP::true, response => $sweep_res->{response}, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res }, { action => 'transfer', %$sweep_res } ] },
+                        };
+                    }
+                    return {
+                        ok          => 0,
+                        error       => $sweep_note,
+                        verify_note => $verify_note,
+                        res         => { ok => JSON::PP::false, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res }, { action => 'transfer', %$sweep_res } ] },
+                    };
+                }
+
+                return {
+                    ok          => 0,
+                    error       => $self->_summarize_task_error($sweep_res),
+                    verify_note => undef,
+                    res         => { ok => JSON::PP::false, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res }, { action => 'transfer', %$sweep_res } ] },
+                };
+            }
+        }
+    }
 
     if ($ok) {
         my ($verified, $note) = $self->_verify_task_effect($api, $task);
@@ -570,29 +668,12 @@ sub _run_task_in_child {
         }
     }
 
-    my $payload = {
-        task        => $task,
-        ok          => $ok ? JSON::PP::true : JSON::PP::false,
+    return {
+        ok          => $ok,
         error       => $error,
         verify_note => $verify_note,
-        response    => $res->{response},
-        attempts    => $res->{attempts},
-        ts          => now_utc(),
+        res         => $res,
     };
-
-    my $path = $self->_child_result_path($$);
-    open my $fh, '>', $path or exit 2;
-    print $fh JSON::PP->new->utf8->canonical->encode($payload);
-    close $fh;
-
-    if ($ok) {
-        $self->log_line("INFO: worker finished pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " verify='" . ($verify_note // '') . "'");
-    }
-    else {
-        $self->log_line("WARN: worker failed pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " error='" . ($error // 'worker failed') . "'");
-    }
-
-    exit($ok ? 0 : 1);
 }
 
 sub dispatch_workers {
