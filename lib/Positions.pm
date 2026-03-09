@@ -200,17 +200,32 @@ sub wallet_address {
     return $stdout;
 }
 
+sub _page_limit_for_subcommand {
+    my ($self, $subcommand) = @_;
+
+    my $limit = $self->{page_size};
+    $limit = 1 unless defined $limit && $limit =~ /^\d+$/ && $limit > 0;
+
+    # polymarket data closed-positions enforces max=50.
+    if (defined $subcommand && $subcommand eq 'closed-positions' && $limit > 50) {
+        $limit = 50;
+    }
+
+    return $limit;
+}
+
 sub _fetch_positions_page {
     my ($self, $wallet, $subcommand, $label) = @_;
 
     my @all;
     my $offset = 0;
+    my $limit = $self->_page_limit_for_subcommand($subcommand);
 
     while (1) {
         my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
             0,
             '-o', 'json', 'data', $subcommand, $wallet,
-            '--limit', $self->{page_size}, '--offset', $offset,
+            '--limit', $limit, '--offset', $offset,
         );
         die "Failed: polymarket data $subcommand\n$stderr\n" if $exit != 0;
 
@@ -224,8 +239,8 @@ sub _fetch_positions_page {
 
         last if !@$arr;
         push @all, @$arr;
-        last if @$arr < $self->{page_size};
-        $offset += $self->{page_size};
+        last if @$arr < $limit;
+        $offset += $limit;
     }
 
     return \@all;

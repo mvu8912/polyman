@@ -24,6 +24,29 @@ use lib 'lib';
     }
 }
 
+{
+    package InspectPositions;
+    use parent 'Positions';
+
+    sub new_with_responses {
+        my ($class, $responses, %args) = @_;
+        my $self = $class->SUPER::new(%args);
+        $self->{_responses} = $responses;
+        $self->{_idx} = 0;
+        $self->{_calls} = [];
+        return $self;
+    }
+
+    sub polymarket_cmd_capture {
+        my ($self, $needs_wallet, @args) = @_;
+        push @{ $self->{_calls} }, [@args];
+        my $r = $self->{_responses}[ $self->{_idx}++ ];
+        return @$r;
+    }
+
+    sub calls { return $_[0]{_calls}; }
+}
+
 my $p1 = TestPositions->new_with_responses([
     [0, " 0x1111111111111111111111111111111111111111\n", ''],
 ]);
@@ -41,6 +64,14 @@ my $p3 = TestPositions->new_with_responses([
 ], page_size => 2);
 my $all = $p3->fetch_positions('0x1111111111111111111111111111111111111111');
 is(scalar(@$all), 3, 'pagination works');
+
+
+my $p3c = InspectPositions->new_with_responses([
+    [0, '[]', ''],
+], page_size => 200);
+$p3c->fetch_closed_positions('0x1111111111111111111111111111111111111111');
+my $closed_cmd = join(' ', @{ $p3c->calls->[0] });
+like($closed_cmd, qr/data closed-positions .* --limit 50 --offset 0/, 'closed-positions fetch is capped to CLI max limit 50');
 
 
 my $p3b = TestPositions->new_with_responses([
