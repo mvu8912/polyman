@@ -42,6 +42,19 @@ my $p3 = TestPositions->new_with_responses([
 my $all = $p3->fetch_positions('0x1111111111111111111111111111111111111111');
 is(scalar(@$all), 3, 'pagination works');
 
+
+my $p3b = TestPositions->new_with_responses([
+    [0, '[{"condition_id":"c1","outcome":"Yes","size":"1"}]', ''],
+    [0, '[]', ''],
+    [0, '[{"condition_id":"c2","outcome":"No"}]', ''],
+    [0, '[]', ''],
+], page_size => 1);
+my $all_manageable = $p3b->fetch_manageable_positions('0x1111111111111111111111111111111111111111');
+is(scalar(@$all_manageable), 2, 'fetch_manageable_positions merges open and hidden closed positions');
+ok(!$all_manageable->[0]{_hidden}, 'open position not marked hidden');
+ok($all_manageable->[1]{_hidden}, 'closed-only position marked hidden');
+ok($all_manageable->[1]{redeemable}, 'closed-only position is considered redeemable candidate');
+
 my $p4 = TestPositions->new_with_responses([
     [0, '{"status":"ok"}', ''],
 ]);
@@ -91,7 +104,7 @@ is(
         outcome => 'Yes',
         outcome_index => 0,
     }),
-    '0xcb2c8ca36d7a765f04440834778b68d910e44d4d277f0792f012db64f0f94ac8',
+    '91898220183742601070760510452630848054828384834207792757174701092455484836552',
     'token_dec_for_position resolves hex token_id via condition_id + clob market tokens',
 );
 

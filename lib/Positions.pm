@@ -200,21 +200,27 @@ sub wallet_address {
     return $stdout;
 }
 
-sub fetch_positions {
-    my ($self, $wallet) = @_;
+sub _fetch_positions_page {
+    my ($self, $wallet, $subcommand, $label) = @_;
+
     my @all;
     my $offset = 0;
 
     while (1) {
         my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
             0,
-            '-o', 'json', 'data', 'positions', $wallet,
+            '-o', 'json', 'data', $subcommand, $wallet,
             '--limit', $self->{page_size}, '--offset', $offset,
         );
-        die "Failed: polymarket data positions\n$stderr\n" if $exit != 0;
+        die "Failed: polymarket data $subcommand\n$stderr\n" if $exit != 0;
 
         my $arr = $self->json_decode($stdout);
-        die "Expected array from data positions\n" unless ref($arr) eq 'ARRAY';
+        die "Expected array from data $subcommand\n" unless ref($arr) eq 'ARRAY';
+
+        for my $row (@$arr) {
+            next unless ref($row) eq 'HASH';
+            $row->{_source} = $label if defined $label && $label ne '';
+        }
 
         last if !@$arr;
         push @all, @$arr;
@@ -223,6 +229,50 @@ sub fetch_positions {
     }
 
     return \@all;
+}
+
+sub fetch_positions {
+    my ($self, $wallet) = @_;
+    return $self->_fetch_positions_page($wallet, 'positions', 'positions');
+}
+
+sub fetch_closed_positions {
+    my ($self, $wallet) = @_;
+    return $self->_fetch_positions_page($wallet, 'closed-positions', 'closed_positions');
+}
+
+sub fetch_manageable_positions {
+    my ($self, $wallet) = @_;
+
+    my $open = $self->fetch_positions($wallet);
+    my $closed = $self->fetch_closed_positions($wallet);
+
+    my @all = @$open;
+    my %seen = map { (_position_key($_) => 1) } grep { ref($_) eq 'HASH' } @all;
+
+    for my $p (@$closed) {
+        next unless ref($p) eq 'HASH';
+        my $k = _position_key($p);
+        next if defined $k && exists $seen{$k};
+
+        my $shadow = {
+            %$p,
+            size          => ($p->{size} // 0),
+            current_value => ($p->{current_value} // 0),
+            redeemable    => JSON::PP::true,
+            _hidden       => JSON::PP::true,
+        };
+        push @all, $shadow;
+        $seen{$k} = 1 if defined $k;
+    }
+
+    return \@all;
+}
+
+sub _position_key {
+    my ($p) = @_;
+    return undef unless ref($p) eq 'HASH';
+    return join(':', ($p->{condition_id} // 'none'), ($p->{outcome} // 'none'));
 }
 
 sub token_dec_for_position {
@@ -248,7 +298,7 @@ sub token_dec_for_position {
                 my $to = lc($t->{outcome});
                 $to =~ s/^\s+|\s+$//g;
                 my $id = $t->{token_id};
-                return $id if $to eq $norm && _is_token_id($id);
+                return _normalize_token_dec($id) if $to eq $norm && _is_token_id($id);
             }
         }
 
@@ -258,20 +308,20 @@ sub token_dec_for_position {
                 next unless ref($t) eq 'HASH';
                 my $ti = $t->{outcome_index};
                 my $id = $t->{token_id};
-                return $id if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && _is_token_id($id);
+                return _normalize_token_dec($id) if defined $ti && $ti =~ /^\d+$/ && $ti == $idx && _is_token_id($id);
             }
         }
 
         # Conservative fallback: if only one token exists, use it.
         if (@$tokens == 1 && ref($tokens->[0]) eq 'HASH') {
             my $id = $tokens->[0]{token_id};
-            return $id if _is_token_id($id);
+            return _normalize_token_dec($id) if _is_token_id($id);
         }
     }
 
     for my $k (qw(clob_token_id asset_id token_id)) {
         my $v = $p->{$k};
-        return $v if _is_token_id($v);
+        return _normalize_token_dec($v) if _is_token_id($v);
     }
 
     return undef;
@@ -283,6 +333,17 @@ sub _is_token_id {
     return 1 if $v =~ /^\d+$/;
     return 1 if $v =~ /^0x[0-9a-fA-F]+$/;
     return 0;
+}
+
+sub _normalize_token_dec {
+    my ($v) = @_;
+    return undef unless _is_token_id($v);
+    return $v if $v =~ /^\d+$/;
+
+    my $hex = $v;
+    $hex =~ s/^0x//i;
+    my $bi = Math::BigInt->from_hex('0x' . $hex);
+    return $bi->bstr();
 }
 
 sub _fetch_market_tokens {
@@ -315,8 +376,13 @@ sub _sync_conditional_balance_allowance {
 
 sub market_sell {
     my ($self, %args) = @_;
-    my $token_dec = $args{token_dec};
+    my $token_dec = _normalize_token_dec($args{token_dec});
     my $amount    = $args{amount};
+
+    return {
+        ok    => JSON::PP::false,
+        error => 'invalid token_dec',
+    } unless defined $token_dec;
 
     my @cmd = (
         '-o', 'json', 'clob', 'market-order',

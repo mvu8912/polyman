@@ -380,6 +380,20 @@ sub _task_position_gone {
     return 1;
 }
 
+
+sub _fetch_manageable_positions {
+    my ($self, $wallet) = @_;
+    return [] unless defined $wallet && $wallet ne '';
+
+    my $api = $self->{positions_api};
+    if ($api && $api->can('fetch_manageable_positions')) {
+        return $api->fetch_manageable_positions($wallet);
+    }
+
+    return $api->fetch_positions($wallet);
+}
+
+
 sub _verify_task_effect {
     my ($self, $api, $task) = @_;
 
@@ -397,7 +411,7 @@ sub _verify_task_effect {
 
     while (1) {
         $attempt++;
-        my $positions = eval { $api->fetch_positions($wallet) };
+        my $positions = eval { $self->_fetch_manageable_positions($wallet) };
         if ($@) {
             my $e = $@;
             $e =~ s/\s+$//;
@@ -777,7 +791,7 @@ sub run_iteration {
     my $wallet = $self->_ensure_wallet();
     my $positions = [];
     if (defined $wallet && $wallet ne '') {
-        $positions = $self->{positions_api}->fetch_positions($wallet);
+        $positions = $self->_fetch_manageable_positions($wallet);
     }
 
     my $snapshot = $self->_position_snapshot($positions);
@@ -790,8 +804,6 @@ sub run_iteration {
 
     for my $p (@$positions) {
         next unless ref($p) eq 'HASH';
-        my $size = _num_or_undef($p->{size});
-        next unless defined $size && $size > 0;
 
         my $key = $self->position_key($p);
         $seen{$key} = 1;
@@ -805,6 +817,23 @@ sub run_iteration {
         my $s = $self->{state}{positions}{$key};
         $s->{queued} ||= {};
         $s->{done} ||= {};
+
+        my $is_hidden = $p->{_hidden} ? 1 : 0;
+        if ($is_hidden) {
+            if ($self->{cfg}{close_on_redeemable}
+                && defined($p->{condition_id})
+                && $p->{condition_id} ne ''
+                && !$self->_task_is_busy($s, 'redeem')
+                && !($s->{done}{redeem} ? 1 : 0)) {
+                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
+                $self->enqueue_task(%$task);
+                $s->{queued}{redeem} = JSON::PP::true;
+            }
+            next;
+        }
+
+        my $size = _num_or_undef($p->{size});
+        next unless defined $size && $size > 0;
 
         my $current_value = _num_or_undef($p->{current_value});
         my $token_dec = $self->_resolve_token_dec($p);
