@@ -40,3 +40,6 @@ carton exec prove -I t/lib -r t
 ```
 
 7. For any positions related matter. Like list active positions, sell a position in market value or limit price, close a position or redeem a position or sweep / transfer a position. Always refer back to bin/PERFECT-EXAMPLE-HOW-POSTIONS-WORKS.pl to get idea how to do it.
+
+8. This project is base on the compile version of the source code of this cli tool - https://github.com/Polymarket/polymarket-cli
+   If I mention about polymarket-cli source code. That is what is all about. And you should have a look into it.
