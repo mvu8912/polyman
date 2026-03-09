@@ -55,6 +55,17 @@ $m->_retry_or_clear({ action => 'stop_hit', position_key => 'c1:YES', retries =>
 is(scalar @{ $m->{pending_tasks} }, 2, 'balance/allowance error remains retryable while bot attempts recovery');
 is($m->{pending_tasks}[-1]{action}, 'stop_hit', 'stop_hit task requeued on balance/allowance error');
 
+
+$m->{state}{positions}{'c1:YES'}{queued}{stop_hit} = JSON::PP::true;
+$m->_retry_or_clear(
+    { action => 'stop_hit', position_key => 'c1:YES', retries => 0 },
+    q{Status: error(400 Bad Request) making POST call to /order with {"error":"not enough balance / allowance"}
+Hint: run `polymarket approve set` once for this wallet and token approvals.}
+);
+is(scalar @{ $m->{pending_tasks} }, 2, 'allowance error with approve hint is treated as permanent for sell actions');
+ok(!$m->{state}{positions}{'c1:YES'}{queued}{stop_hit}, 'queued stop_hit cleared when approval hint indicates manual intervention required');
+ok(!$m->{state}{positions}{'c1:YES'}{done}{stop_hit}, 'stop_hit is not marked done on approval-config permanent failure');
+
 my $m2 = bless {
     cfg => {
         state_file => $state_path,
