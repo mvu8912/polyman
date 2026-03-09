@@ -54,6 +54,14 @@ my $redeem_task = {
     index_set    => 1,
 };
 
+my $redeem_task_no_amount = {
+    action       => 'redeem',
+    token_dec    => '123',
+    condition_id => '0xabc',
+    position_key => '0xabc:Up',
+    index_set    => 1,
+};
+
 {
     no warnings 'redefine';
     local *Manager::_verify_task_effect = sub {
@@ -133,6 +141,24 @@ my $redeem_task = {
     like($res->{verify_note}, qr/redeem_verify_failed_then_sweep/, 'verify note records redeem->sweep path');
     is($res->{res}{attempts}[0]{action}, 'redeem', 'first attempt is redeem');
     is($res->{res}{attempts}[1]{action}, 'transfer', 'second attempt is transfer sweep');
+}
+
+{
+    no warnings 'redefine';
+    local *Manager::_verify_task_effect = sub {
+        my ($self, $api, $task) = @_;
+        return (1, 'verified position clear on attempt=1');
+    };
+
+    my $api = FakeAPI->new(
+        sell_responses   => [],
+        redeem_responses => [ { ok => JSON::PP::false, error => 'redeem failed' } ],
+        sweep_responses  => [ { ok => JSON::PP::true, response => { tx => '0x4' } } ],
+    );
+
+    my $res = $m->_execute_task_with_recovery($api, $redeem_task_no_amount);
+    ok($res->{ok}, 'redeem fallback to sweep works even when task amount is missing');
+    is($res->{res}{attempts}[1]{action}, 'transfer', 'fallback action remains transfer');
 }
 
 {

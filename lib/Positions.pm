@@ -484,7 +484,7 @@ sub _transfer_outcome_token {
     return {
         ok    => JSON::PP::false,
         error => 'missing sweep args',
-    } unless defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount;
+    } unless defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec;
 
     my $txhash = eval {
         $self->_sweep_transfer_via_raw_tx(
@@ -503,6 +503,21 @@ sub _transfer_outcome_token {
     my $err = $@ || 'raw transfer failed';
     $err =~ s/\s+\z//;
     return { ok => JSON::PP::false, error => $err };
+}
+
+sub _normalise_raw_tx_hex {
+    my ($self, $raw) = @_;
+    $raw = '' unless defined $raw;
+    $raw =~ s/^\s+|\s+$//g;
+
+    if ($raw !~ /\A0x?[0-9a-fA-F]*\z/) {
+        $raw = unpack('H*', $raw);
+    }
+
+    $raw =~ s/^0x//i;
+    $raw =~ s/\s+//g;
+    $raw = "0$raw" if (length($raw) % 2) == 1;
+    return "0x$raw";
 }
 
 sub _load_eth_deps {
@@ -653,12 +668,7 @@ sub _sweep_transfer_via_raw_tx {
     );
     $key->sign_transaction($tx);
 
-    my $raw = $tx->serialize;
-    $raw =~ s/^\s+|\s+$//g;
-    if ($raw !~ /^0x[0-9a-fA-F]+$/) {
-        my $hex = unpack('H*', $raw);
-        $raw = '0x' . $hex;
-    }
+    my $raw = $self->_normalise_raw_tx_hex($tx->serialize);
 
     return $self->_rpc_call('eth_sendRawTransaction', [$raw]);
 }

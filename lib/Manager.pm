@@ -566,8 +566,7 @@ sub _execute_task_with_recovery {
     if (!$ok && $action eq 'redeem') {
         if (defined($self->{cfg}{loser_sweep_to})
             && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
-            && defined($task->{token_dec})
-            && defined($task->{amount})) {
+            && defined($task->{token_dec})) {
             my $sweep_res = $api->close_zero_value_position(
                 token_dec    => $task->{token_dec},
                 amount       => $task->{amount},
@@ -674,8 +673,7 @@ sub _execute_task_with_recovery {
             if (($task->{action} // '') eq 'redeem'
                 && defined($self->{cfg}{loser_sweep_to})
                 && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
-                && defined($task->{token_dec})
-                && defined($task->{amount})) {
+                && defined($task->{token_dec})) {
                 my $sweep_res = $api->close_zero_value_position(
                     token_dec    => $task->{token_dec},
                     amount       => $task->{amount},
@@ -1135,7 +1133,7 @@ sub run_iteration {
                     action       => 'redeem',
                     position_key => $key,
                     token_dec    => ($has_token_dec ? $token_dec : undef),
-                    amount       => ((defined $size && $size > 0) ? $size : undef),
+                    amount       => $size,
                     condition_id => $p->{condition_id},
                     index_set    => $redeem_index_set,
                 );
