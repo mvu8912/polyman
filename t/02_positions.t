@@ -110,11 +110,22 @@ ok($sell_recover->{ok}, 'market_sell retries after balance/allowance sync');
 my $p5c = TestPositions->new_with_responses([
     [1, '', '{"error":"not enough balance / allowance"}'],
     [0, 'Balance allowance updated.', ''],
-    [1, '', '{"error":"not enough balance / allowance"}'],
+    [0, '{"status":"approved"}', ''],
+    [0, '{"status":"ok"}', ''],
 ]);
-my $sell_needs_approval = $p5c->market_sell(token_dec => '123', amount => '1.0');
+my $sell_auto_approve = $p5c->market_sell(token_dec => '123', amount => '1.0');
+ok($sell_auto_approve->{ok}, 'market_sell auto-runs approve set and retries sell when allowance is missing');
+
+my $p5d = TestPositions->new_with_responses([
+    [1, '', '{"error":"not enough balance / allowance"}'],
+    [0, 'Balance allowance updated.', ''],
+    [1, '', '{"error":"not enough balance / allowance"}'],
+    [1, '', 'approve failed'],
+]);
+my $sell_needs_approval = $p5d->market_sell(token_dec => '123', amount => '1.0');
 ok(!$sell_needs_approval->{ok}, 'market_sell still fails when approval is truly missing');
 like($sell_needs_approval->{error}, qr/polymarket approve set/, 'market_sell provides approve hint on persistent allowance failure');
+like($sell_needs_approval->{error}, qr/Attempted `polymarket approve set` but it failed: approve failed/, 'market_sell includes approve-set failure details');
 
 my $p6 = TestPositions->new_with_responses([
     [0, '{"redeemed":true}', ''],

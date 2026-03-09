@@ -389,6 +389,14 @@ sub _sync_conditional_balance_allowance {
     );
 }
 
+sub _approve_wallet_trading {
+    my ($self) = @_;
+    return $self->polymarket_cmd_capture(
+        1,
+        'approve', 'set',
+    );
+}
+
 sub market_sell {
     my ($self, %args) = @_;
     my $token_dec = _normalize_token_dec($args{token_dec});
@@ -414,7 +422,20 @@ sub market_sell {
         if ($exit != 0
             && defined($stderr)
             && $stderr =~ /not enough balance\s*\/\s*allowance/i) {
-            $stderr .= "\nHint: run `polymarket approve set` once for this wallet and token approvals.";
+            my ($approve_exit, $approve_stdout, $approve_stderr) = $self->_approve_wallet_trading();
+            if ($approve_exit == 0) {
+                ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(1, @cmd);
+            }
+
+            if ($exit != 0
+                && defined($stderr)
+                && $stderr =~ /not enough balance\s*\/\s*allowance/i) {
+                if ($approve_exit != 0) {
+                    my $approve_detail = $approve_stderr || $approve_stdout || 'approve set failed';
+                    $stderr .= "\nAttempted `polymarket approve set` but it failed: $approve_detail";
+                }
+                $stderr .= "\nHint: run `polymarket approve set` once for this wallet and token approvals.";
+            }
         }
     }
 
