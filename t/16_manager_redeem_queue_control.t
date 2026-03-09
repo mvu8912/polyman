@@ -15,23 +15,22 @@ my $m1 = bless {
     active_workers => {},
 }, 'Manager';
 
-$m1->enqueue_task(action => 'redeem', position_key => 'condA:Up', condition_id => 'condA');
-$m1->enqueue_task(action => 'redeem', position_key => 'condA:Down', condition_id => 'condA');
+$m1->enqueue_task(action => 'redeem', position_key => 'condA:Up', condition_id => 'condA', index_set => 1);
+$m1->enqueue_task(action => 'redeem', position_key => 'condA:Down', condition_id => 'condA', index_set => 1);
 is(scalar @{ $m1->{pending_tasks} }, 1, 'only one redeem task queued per condition');
 
-# If a condition already has redeem done in state, do not enqueue again.
-$m1->{state}{positions}{'condB:Up'} = { done => { redeem => JSON::PP::true } };
-$m1->enqueue_task(action => 'redeem', position_key => 'condB:Down', condition_id => 'condB');
-is(scalar @{ $m1->{pending_tasks} }, 1, 'redeem not queued when condition already marked done');
+# Different index_set under same condition is a different redeem scope.
+$m1->enqueue_task(action => 'redeem', position_key => 'condA:Down', condition_id => 'condA', index_set => 2);
+is(scalar @{ $m1->{pending_tasks} }, 2, 'different index_set can queue another redeem under same condition');
 
-# If condition is actively redeeming in a worker, queue should not accept duplicate redeem.
+# If same scope is actively redeeming in a worker, queue should not accept duplicate redeem.
 $m1->{active_workers}{777} = {
-    task => { action => 'redeem', position_key => 'condC:Up', condition_id => 'condC' },
+    task => { action => 'redeem', position_key => 'condC:Up', condition_id => 'condC', index_set => 1 },
     started_at => time,
     baseline => {},
 };
-$m1->enqueue_task(action => 'redeem', position_key => 'condC:Down', condition_id => 'condC');
-is(scalar @{ $m1->{pending_tasks} }, 1, 'redeem not queued when condition already active in worker');
+$m1->enqueue_task(action => 'redeem', position_key => 'condC:Down', condition_id => 'condC', index_set => 1);
+is(scalar @{ $m1->{pending_tasks} }, 2, 'redeem not queued when same redeem scope already active in worker');
 
 ok($m1->_has_active_redeem_worker(), '_has_active_redeem_worker detects active redeem');
 

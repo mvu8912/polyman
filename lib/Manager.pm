@@ -258,26 +258,29 @@ sub _position_has_inflight_task {
 }
 
 sub _condition_redeem_busy_or_done {
-    my ($self, $condition_id) = @_;
+    my ($self, $condition_id, $index_set) = @_;
     return 0 unless defined $condition_id && $condition_id ne '';
+
+    my $same_scope = sub {
+        my ($task) = @_;
+        return 0 unless ref($task) eq 'HASH';
+        return 0 unless (($task->{condition_id} // '') eq $condition_id);
+
+        my $tidx = $task->{index_set};
+        return 1 unless defined $index_set && $index_set =~ /^\d+$/;
+        return 1 unless defined $tidx && $tidx =~ /^\d+$/;
+        return $tidx == $index_set ? 1 : 0;
+    };
 
     for my $task (@{ $self->{pending_tasks} || [] }) {
         next unless ($task->{action} // '') eq 'redeem';
-        return 1 if (($task->{condition_id} // '') eq $condition_id);
+        return 1 if $same_scope->($task);
     }
 
     for my $pid (keys %{ $self->{active_workers} || {} }) {
         my $task = $self->{active_workers}{$pid}{task} || {};
         next unless ($task->{action} // '') eq 'redeem';
-        return 1 if (($task->{condition_id} // '') eq $condition_id);
-    }
-
-    for my $k (keys %{ $self->{state}{positions} || {} }) {
-        my $st = $self->{state}{positions}{$k};
-        next unless ref($st) eq 'HASH';
-        my ($cond) = split(/:/, ($k // ''), 2);
-        next unless defined $cond && $cond eq $condition_id;
-        return 1 if $st->{done} && $st->{done}{redeem};
+        return 1 if $same_scope->($task);
     }
 
     return 0;
@@ -297,7 +300,7 @@ sub enqueue_task {
     return if $self->_pending_has_task(\%task);
 
     if (($task{action} // '') eq 'redeem') {
-        return if $self->_condition_redeem_busy_or_done($task{condition_id});
+        return if $self->_condition_redeem_busy_or_done($task{condition_id}, $task{index_set});
     }
 
     push @{ $self->{pending_tasks} }, \%task;
@@ -905,6 +908,8 @@ sub run_iteration {
         $s->{done} ||= {};
         $s->{last_position} = { %$p };
 
+        my $redeem_index_set = _index_set_from_outcome_index($p->{outcome_index});
+
         my $is_hidden = $p->{_hidden} ? 1 : 0;
         if ($is_hidden) {
             if ($self->{cfg}{close_on_redeemable}
@@ -912,8 +917,8 @@ sub run_iteration {
                 && $p->{condition_id} ne ''
                 && !$self->_task_is_busy($s, 'redeem')
                 && !($s->{done}{redeem} ? 1 : 0)
-                && !$self->_condition_redeem_busy_or_done($p->{condition_id})) {
-                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => _index_set_from_outcome_index($p->{outcome_index}));
+                && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
+                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
                 $self->enqueue_task(%$task);
                 $s->{queued}{redeem} = JSON::PP::true;
             }
@@ -932,8 +937,8 @@ sub run_iteration {
             && !$self->_looks_like_loser($p)
             && !$self->_task_is_busy($s, 'redeem')
             && !($s->{done}{redeem} ? 1 : 0)
-            && !$self->_condition_redeem_busy_or_done($p->{condition_id})) {
-            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => _index_set_from_outcome_index($p->{outcome_index}));
+            && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
+            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;
             next;
