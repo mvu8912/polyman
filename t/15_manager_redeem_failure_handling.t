@@ -46,7 +46,8 @@ my $m = bless {
 }
 
 is(scalar @{ $m->{pending_tasks} }, 0, 'permanent redeem failure is not retried');
-ok($m->{state}{positions}{'c1:Up'}{done}{redeem}, 'redeem action marked done after permanent failure');
+ok(!($m->{state}{positions}{'c1:Up'}{done}{redeem}), 'redeem action is not marked done after failure');
+ok($m->{state}{positions}{'c1:Up'}{failed}{redeem_at}, 'redeem failure timestamp recorded');
 
 my $joined = join("\n", @logs);
 like($joined, qr/giving up task action=redeem key=c1:Up .*permanent failure/, 'giving-up log emitted for redeem permanent failure');

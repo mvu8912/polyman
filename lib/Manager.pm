@@ -33,6 +33,7 @@ sub new_from_env {
             worker_count      => _env_num('WORKER_COUNT', 2),
             worker_timeout_s  => _env_num('WORKER_TIMEOUT_S', 30),
             worker_max_retries => _env_num('WORKER_MAX_RETRIES', 2),
+            redeem_retry_cooldown_s => _env_num('REDEEM_RETRY_COOLDOWN_S', 300),
             loser_sweep_to    => ($ENV{LOSER_SWEEP_TO} // ''),
             result_dir        => ($ENV{RESULT_DIR} // '/tmp/polyman-results'),
             post_action_verify_timeout_s  => _env_num('POST_ACTION_VERIFY_TIMEOUT_S', 60),
@@ -675,6 +676,20 @@ sub _is_permanent_task_failure {
     return 0;
 }
 
+sub _redeem_in_cooldown {
+    my ($self, $s) = @_;
+    return 0 unless ref($s) eq 'HASH';
+
+    my $cooldown = 0 + ($self->{cfg}{redeem_retry_cooldown_s} // 0);
+    return 0 if $cooldown <= 0;
+
+    my $failed = $s->{failed} || {};
+    my $at = $failed->{redeem_at};
+    return 0 unless defined $at && $at =~ /^\d+$/;
+
+    return (time() - $at) < $cooldown ? 1 : 0;
+}
+
 sub _retry_or_clear {
     my ($self, $task, $reason) = @_;
     my $key = $task->{position_key};
@@ -710,12 +725,18 @@ sub _retry_or_clear {
         delete $self->{state}{positions}{$key}{queued}{$action};
 
         my $mark_done = 0;
-        $mark_done = 1 if $action eq 'close_loser' || $action eq 'redeem';
-        $mark_done = 1 if $is_permanent && $action ne 'tp1' && $action ne 'tp2' && $action ne 'stop_hit' && $action ne 'max_loss';
+        $mark_done = 1 if $action eq 'close_loser';
+        $mark_done = 1 if $is_permanent && $action ne 'tp1' && $action ne 'tp2' && $action ne 'stop_hit' && $action ne 'max_loss' && $action ne 'redeem';
 
         if ($mark_done) {
             $self->{state}{positions}{$key}{done} ||= {};
             $self->{state}{positions}{$key}{done}{$action} = JSON::PP::true;
+        }
+
+        if ($action eq 'redeem') {
+            $self->{state}{positions}{$key}{failed} ||= {};
+            $self->{state}{positions}{$key}{failed}{redeem_at} = time();
+            $self->{state}{positions}{$key}{failed}{redeem_reason} = "$reason";
         }
     }
 
@@ -908,6 +929,11 @@ sub run_iteration {
         $s->{done} ||= {};
         $s->{last_position} = { %$p };
 
+        if (($s->{done}{redeem} ? 1 : 0) && ($p->{redeemable} ? 1 : 0)) {
+            delete $s->{done}{redeem};
+            $self->log_line("WARN: clearing stale done.redeem key=$key because position is still redeemable");
+        }
+
         my $redeem_index_set = _index_set_from_outcome_index($p->{outcome_index});
 
         my $is_hidden = $p->{_hidden} ? 1 : 0;
@@ -917,6 +943,7 @@ sub run_iteration {
                 && $p->{condition_id} ne ''
                 && !$self->_task_is_busy($s, 'redeem')
                 && !($s->{done}{redeem} ? 1 : 0)
+                && !$self->_redeem_in_cooldown($s)
                 && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
                 my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
                 $self->enqueue_task(%$task);
@@ -937,6 +964,7 @@ sub run_iteration {
             && !$self->_looks_like_loser($p)
             && !$self->_task_is_busy($s, 'redeem')
             && !($s->{done}{redeem} ? 1 : 0)
+            && !$self->_redeem_in_cooldown($s)
             && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
             my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
             $self->enqueue_task(%$task);
