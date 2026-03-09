@@ -228,6 +228,15 @@ like($sell_err_debug->{error}, qr/cmd=polymarket --signature-type proxy -o json 
 like($sell_err_debug->{error}, qr/stdout_raw=raw-out/, 'error includes raw stdout for debugging');
 like($sell_err_debug->{error}, qr/stderr_raw=raw-err/, 'error includes raw stderr for debugging');
 
+
+my $p10c = CmdCapturePositions->new_with_results([
+    [0, '{"redeemed":true}', ''],
+]);
+my $r10c = $p10c->redeem_condition(condition_id => '0xabc', index_set => 2);
+ok($r10c->{ok}, 'redeem_condition supports index_set override');
+my $redeem_cmd = join(' ', @{ $p10c->calls->[0] });
+like($redeem_cmd, qr/ctf redeem --condition 0xabc --index-sets 2/, 'redeem command includes index_set when provided');
+
 my $p11 = FallbackPositions->new_with_results([], 
     signature_type => 'proxy',
     private_key => '0xabc',

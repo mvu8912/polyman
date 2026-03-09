@@ -26,6 +26,7 @@ my $api = HiddenPositionsAPI->new([
     {
         condition_id => 'c-hidden',
         outcome => 'Yes',
+        outcome_index => 1,
         _hidden => 1,
     }
 ]);
@@ -69,5 +70,6 @@ is($api->{calls}, 1, 'manager prefers fetch_manageable_positions when available'
 is(scalar @{ $m->{pending_tasks} }, 1, 'one task queued for hidden position');
 is($m->{pending_tasks}[0]{action}, 'redeem', 'hidden position queues redeem task');
 is($m->{pending_tasks}[0]{condition_id}, 'c-hidden', 'condition_id forwarded for hidden redeem task');
+is($m->{pending_tasks}[0]{index_set}, 2, 'hidden redeem task includes index_set from outcome_index');
 
 done_testing();

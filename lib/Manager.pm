@@ -95,6 +95,13 @@ sub _num_or_undef {
     return $v + 0;
 }
 
+sub _index_set_from_outcome_index {
+    my ($idx) = @_;
+    return undef unless defined $idx && $idx =~ /^\d+$/;
+    return undef if $idx < 0 || $idx > 62;
+    return 2 ** $idx;
+}
+
 sub _looks_like_loser {
     my ($self, $p) = @_;
     return 0 unless ref($p) eq 'HASH';
@@ -304,6 +311,7 @@ sub _build_task {
         token_dec     => $args{token_dec},
         amount        => $args{amount},
         condition_id  => $args{condition_id},
+        index_set    => $args{index_set},
         retries       => ($args{retries} // 0),
     };
 }
@@ -494,7 +502,7 @@ sub _run_task_in_child {
 
     my $res;
     if ($task->{action} eq 'redeem') {
-        $res = $api->redeem_condition(condition_id => $task->{condition_id});
+        $res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
     }
     elsif ($task->{action} eq 'close_loser') {
         $res = $api->close_zero_value_position(
@@ -905,7 +913,7 @@ sub run_iteration {
                 && !$self->_task_is_busy($s, 'redeem')
                 && !($s->{done}{redeem} ? 1 : 0)
                 && !$self->_condition_redeem_busy_or_done($p->{condition_id})) {
-                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
+                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => _index_set_from_outcome_index($p->{outcome_index}));
                 $self->enqueue_task(%$task);
                 $s->{queued}{redeem} = JSON::PP::true;
             }
@@ -925,7 +933,7 @@ sub run_iteration {
             && !$self->_task_is_busy($s, 'redeem')
             && !($s->{done}{redeem} ? 1 : 0)
             && !$self->_condition_redeem_busy_or_done($p->{condition_id})) {
-            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
+            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => _index_set_from_outcome_index($p->{outcome_index}));
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;
             next;

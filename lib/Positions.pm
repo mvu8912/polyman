@@ -431,10 +431,16 @@ sub market_sell {
 sub redeem_condition {
     my ($self, %args) = @_;
     my $condition_id = $args{condition_id};
+    my $index_set = $args{index_set};
+
+    my @cmd = (
+        '-o', 'json', 'ctf', 'redeem', '--condition', $condition_id,
+    );
+    push @cmd, ('--index-sets', $index_set) if defined $index_set && $index_set =~ /^\d+$/ && $index_set > 0;
 
     my ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(
         1,
-        '-o', 'json', 'ctf', 'redeem', '--condition', $condition_id,
+        @cmd,
     );
 
     return {
