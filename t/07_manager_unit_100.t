@@ -81,4 +81,44 @@ for my $i (1..23) {
     is(scalar(@{ $dup->{pending_tasks} }), 1, "duplicate enqueue blocked round $i");
 }
 
+
+
+# close_loser busy should suppress queueing other sell tasks
+my $busy_close = bless {
+    cfg => {
+        tp1_trigger_pct => 1,
+        tp1_close_pct => 50,
+        tp2_trigger_pct => 0,
+        tp2_close_pct => 0,
+        max_loss_pct => 0,
+    },
+    pending_tasks => [],
+    active_workers => {},
+}, 'Manager';
+my $state_busy = { queued => { close_loser => JSON::PP::true }, done => {} };
+$busy_close->_queue_position_tasks(
+    { size => '10', percent_pnl => '10', token_id => '123' },
+    $state_busy,
+    'busy:key',
+    { stop_hit => 1 },
+);
+is(scalar @{ $busy_close->{pending_tasks} }, 0, 'no tp/stop tasks queued while close_loser is busy');
+
+
+
+# redeem verification should not treat size=0/current_value=0 as clear when still redeemable
+my $redeem_task = { action => 'redeem', position_key => 'condR:Up', retries => 0 };
+ok(
+    !$m->_task_position_gone([
+        { condition_id => 'condR', outcome => 'Up', size => 0, current_value => 0, redeemable => JSON::PP::true }
+    ], $redeem_task),
+    'redeem verify keeps waiting while position remains redeemable',
+);
+ok(
+    $m->_task_position_gone([
+        { condition_id => 'condR', outcome => 'Up', size => 0, current_value => 0, redeemable => JSON::PP::false }
+    ], $redeem_task),
+    'redeem verify succeeds once position is no longer redeemable',
+);
+
 done_testing();

@@ -33,6 +33,7 @@ sub new_from_env {
             worker_count      => _env_num('WORKER_COUNT', 2),
             worker_timeout_s  => _env_num('WORKER_TIMEOUT_S', 30),
             worker_max_retries => _env_num('WORKER_MAX_RETRIES', 2),
+            redeem_retry_cooldown_s => _env_num('REDEEM_RETRY_COOLDOWN_S', 300),
             loser_sweep_to    => ($ENV{LOSER_SWEEP_TO} // ''),
             result_dir        => ($ENV{RESULT_DIR} // '/tmp/polyman-results'),
             post_action_verify_timeout_s  => _env_num('POST_ACTION_VERIFY_TIMEOUT_S', 60),
@@ -95,6 +96,13 @@ sub _num_or_undef {
     return $v + 0;
 }
 
+sub _index_set_from_outcome_index {
+    my ($idx) = @_;
+    return undef unless defined $idx && $idx =~ /^\d+$/;
+    return undef if $idx < 0 || $idx > 62;
+    return 2 ** $idx;
+}
+
 sub _looks_like_loser {
     my ($self, $p) = @_;
     return 0 unless ref($p) eq 'HASH';
@@ -144,6 +152,15 @@ sub now_utc { strftime('%Y-%m-%dT%H:%M:%SZ', gmtime()) }
 sub log_line {
     my ($self, $msg) = @_;
     print '[' . now_utc() . "] $msg\n";
+}
+
+sub _json_compact {
+    my ($v) = @_;
+    my $txt = eval { JSON::PP->new->canonical->encode($v) };
+    return '{}' if $@;
+    $txt =~ s/\s+/ /g;
+    $txt =~ s/^\s+|\s+$//g;
+    return $txt;
 }
 
 sub position_key {
@@ -241,9 +258,52 @@ sub _position_has_inflight_task {
     return 0;
 }
 
+sub _condition_redeem_busy_or_done {
+    my ($self, $condition_id, $index_set) = @_;
+    return 0 unless defined $condition_id && $condition_id ne '';
+
+    my $same_scope = sub {
+        my ($task) = @_;
+        return 0 unless ref($task) eq 'HASH';
+        return 0 unless (($task->{condition_id} // '') eq $condition_id);
+
+        my $tidx = $task->{index_set};
+        return 1 unless defined $index_set && $index_set =~ /^\d+$/;
+        return 1 unless defined $tidx && $tidx =~ /^\d+$/;
+        return $tidx == $index_set ? 1 : 0;
+    };
+
+    for my $task (@{ $self->{pending_tasks} || [] }) {
+        next unless ($task->{action} // '') eq 'redeem';
+        return 1 if $same_scope->($task);
+    }
+
+    for my $pid (keys %{ $self->{active_workers} || {} }) {
+        my $task = $self->{active_workers}{$pid}{task} || {};
+        next unless ($task->{action} // '') eq 'redeem';
+        return 1 if $same_scope->($task);
+    }
+
+    return 0;
+}
+
+sub _has_active_redeem_worker {
+    my ($self) = @_;
+    for my $pid (keys %{ $self->{active_workers} || {} }) {
+        my $task = $self->{active_workers}{$pid}{task} || {};
+        return 1 if ($task->{action} // '') eq 'redeem';
+    }
+    return 0;
+}
+
 sub enqueue_task {
     my ($self, %task) = @_;
     return if $self->_pending_has_task(\%task);
+
+    if (($task{action} // '') eq 'redeem') {
+        return if $self->_condition_redeem_busy_or_done($task{condition_id}, $task{index_set});
+    }
+
     push @{ $self->{pending_tasks} }, \%task;
 }
 
@@ -255,6 +315,7 @@ sub _build_task {
         token_dec     => $args{token_dec},
         amount        => $args{amount},
         condition_id  => $args{condition_id},
+        index_set    => $args{index_set},
         retries       => ($args{retries} // 0),
     };
 }
@@ -364,21 +425,39 @@ sub _task_position_gone {
     my $key = $task->{position_key};
     return 0 unless defined $key && $key ne '';
 
+    my $action = $task->{action} // '';
+
     for my $p (@$positions) {
         next unless ref($p) eq 'HASH';
         next unless ($self->position_key($p) // '') eq $key;
 
+        if ($action eq 'redeem') {
+            my $redeemable = $p->{redeemable} ? 1 : 0;
+            return $redeemable ? 0 : 1;
+        }
+
         my $size = _num_or_undef($p->{size});
         return 1 if !defined($size) || $size <= 0;
-
-        my $cv = _num_or_undef($p->{current_value});
-        return 1 if ($task->{action} // '') eq 'redeem' && defined($cv) && $cv <= 0;
 
         return 0;
     }
 
     return 1;
 }
+
+
+sub _fetch_manageable_positions {
+    my ($self, $wallet) = @_;
+    return [] unless defined $wallet && $wallet ne '';
+
+    my $api = $self->{positions_api};
+    if ($api && $api->can('fetch_manageable_positions')) {
+        return $api->fetch_manageable_positions($wallet);
+    }
+
+    return $api->fetch_positions($wallet);
+}
+
 
 sub _verify_task_effect {
     my ($self, $api, $task) = @_;
@@ -397,7 +476,7 @@ sub _verify_task_effect {
 
     while (1) {
         $attempt++;
-        my $positions = eval { $api->fetch_positions($wallet) };
+        my $positions = eval { $self->_fetch_manageable_positions($wallet) };
         if ($@) {
             my $e = $@;
             $e =~ s/\s+$//;
@@ -431,7 +510,7 @@ sub _run_task_in_child {
 
     my $res;
     if ($task->{action} eq 'redeem') {
-        $res = $api->redeem_condition(condition_id => $task->{condition_id});
+        $res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
     }
     elsif ($task->{action} eq 'close_loser') {
         $res = $api->close_zero_value_position(
@@ -523,7 +602,20 @@ sub dispatch_workers {
     $limit = 1 if $limit < 1;
 
     while (@{ $self->{pending_tasks} } && scalar(keys %{ $self->{active_workers} }) < $limit) {
-        my $task = shift @{ $self->{pending_tasks} };
+        my $pick = 0;
+        if ($self->_has_active_redeem_worker()) {
+            my $found_non_redeem;
+            for my $i (0 .. $#{ $self->{pending_tasks} }) {
+                my $cand = $self->{pending_tasks}[$i] || {};
+                next if (($cand->{action} // '') eq 'redeem');
+                $pick = $i;
+                $found_non_redeem = 1;
+                last;
+            }
+            last unless $found_non_redeem;
+        }
+
+        my $task = splice(@{ $self->{pending_tasks} }, $pick, 1);
         my $pid = fork();
 
         if (!defined $pid) {
@@ -580,11 +672,27 @@ sub _is_permanent_task_failure {
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
     return 1 if $r =~ /post-action verify timeout/;
+    return 1 if $action eq 'redeem' && $r =~ /redeem positions failed/;
     return 1 if $is_sell_action
         && $r =~ /not enough balance\s*\/\s*allowance/
         && $r =~ /approve set/;
+    return 1 if $is_sell_action && $r =~ /no orderbook exists for the requested token id/;
 
     return 0;
+}
+
+sub _redeem_in_cooldown {
+    my ($self, $s) = @_;
+    return 0 unless ref($s) eq 'HASH';
+
+    my $cooldown = 0 + ($self->{cfg}{redeem_retry_cooldown_s} // 0);
+    return 0 if $cooldown <= 0;
+
+    my $failed = $s->{failed} || {};
+    my $at = $failed->{redeem_at};
+    return 0 unless defined $at && $at =~ /^\d+$/;
+
+    return (time() - $at) < $cooldown ? 1 : 0;
 }
 
 sub _retry_or_clear {
@@ -595,11 +703,26 @@ sub _retry_or_clear {
     my $is_permanent = $self->_is_permanent_task_failure($action, $reason);
     my $retry = ($task->{retries} // 0) + 1;
 
+    my $task_json = _json_compact($task);
+    my $state_json = '{}';
+    my $position_json = '{}';
+    if (defined $key && exists $self->{state}{positions}{$key}) {
+        my $st = $self->{state}{positions}{$key};
+        $state_json = _json_compact($st);
+        $position_json = _json_compact($st->{last_position});
+    }
+
+    my %diag_actions = map { $_ => 1 } qw(redeem close_loser tp1 tp2 stop_hit max_loss);
+    if ($diag_actions{$action} && ($reason // '') ne '') {
+        my $mode = (!$is_permanent && $retry <= $self->{cfg}{worker_max_retries}) ? 'retrying' : 'giving_up';
+        $self->log_line("WARN: task diagnostic action=$action key=$key mode=$mode reason=$reason task=$task_json position=$position_json state=$state_json");
+    }
+
     if (!$is_permanent && $retry <= $self->{cfg}{worker_max_retries}) {
         my %new = %$task;
         $new{retries} = $retry;
         $self->enqueue_task(%new);
-        $self->log_line("WARN: retry task action=$action key=$key retry=$retry reason=$reason task=" . JSON::PP->new->canonical->encode($task));
+        $self->log_line("WARN: retry task action=$action key=$key retry=$retry reason=$reason task=$task_json");
         return;
     }
 
@@ -607,12 +730,18 @@ sub _retry_or_clear {
         delete $self->{state}{positions}{$key}{queued}{$action};
 
         my $mark_done = 0;
-        $mark_done = 1 if $action eq 'close_loser' || $action eq 'redeem';
-        $mark_done = 1 if $is_permanent && $action ne 'tp1' && $action ne 'tp2' && $action ne 'stop_hit' && $action ne 'max_loss';
+        $mark_done = 1 if $action eq 'close_loser';
+        $mark_done = 1 if $is_permanent && $action ne 'tp1' && $action ne 'tp2' && $action ne 'stop_hit' && $action ne 'max_loss' && $action ne 'redeem';
 
         if ($mark_done) {
             $self->{state}{positions}{$key}{done} ||= {};
             $self->{state}{positions}{$key}{done}{$action} = JSON::PP::true;
+        }
+
+        if ($action eq 'redeem') {
+            $self->{state}{positions}{$key}{failed} ||= {};
+            $self->{state}{positions}{$key}{failed}{redeem_at} = time();
+            $self->{state}{positions}{$key}{failed}{redeem_reason} = "$reason";
         }
     }
 
@@ -717,6 +846,8 @@ sub _queue_position_tasks {
     my $token_dec   = $self->_resolve_token_dec($p);
     my $percent_pnl = $p->{percent_pnl};
 
+    return if $self->_task_is_busy($s, 'close_loser') || ($s->{done}{close_loser} ? 1 : 0);
+
     if (($self->{cfg}{tp1_trigger_pct} + 0) > 0
         && ($self->{cfg}{tp1_close_pct} + 0) > 0
         && !$s->{tp1_done}
@@ -777,7 +908,7 @@ sub run_iteration {
     my $wallet = $self->_ensure_wallet();
     my $positions = [];
     if (defined $wallet && $wallet ne '') {
-        $positions = $self->{positions_api}->fetch_positions($wallet);
+        $positions = $self->_fetch_manageable_positions($wallet);
     }
 
     my $snapshot = $self->_position_snapshot($positions);
@@ -790,8 +921,6 @@ sub run_iteration {
 
     for my $p (@$positions) {
         next unless ref($p) eq 'HASH';
-        my $size = _num_or_undef($p->{size});
-        next unless defined $size && $size > 0;
 
         my $key = $self->position_key($p);
         $seen{$key} = 1;
@@ -805,6 +934,33 @@ sub run_iteration {
         my $s = $self->{state}{positions}{$key};
         $s->{queued} ||= {};
         $s->{done} ||= {};
+        $s->{last_position} = { %$p };
+
+        if (($s->{done}{redeem} ? 1 : 0) && ($p->{redeemable} ? 1 : 0)) {
+            delete $s->{done}{redeem};
+            $self->log_line("WARN: clearing stale done.redeem key=$key because position is still redeemable");
+        }
+
+        my $redeem_index_set = _index_set_from_outcome_index($p->{outcome_index});
+
+        my $is_hidden = $p->{_hidden} ? 1 : 0;
+        if ($is_hidden) {
+            if ($self->{cfg}{close_on_redeemable}
+                && defined($p->{condition_id})
+                && $p->{condition_id} ne ''
+                && !$self->_task_is_busy($s, 'redeem')
+                && !($s->{done}{redeem} ? 1 : 0)
+                && !$self->_redeem_in_cooldown($s)
+                && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
+                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
+                $self->enqueue_task(%$task);
+                $s->{queued}{redeem} = JSON::PP::true;
+            }
+            next;
+        }
+
+        my $size = _num_or_undef($p->{size});
+        next unless defined $size && $size > 0;
 
         my $current_value = _num_or_undef($p->{current_value});
         my $token_dec = $self->_resolve_token_dec($p);
@@ -814,8 +970,10 @@ sub run_iteration {
             && ($p->{redeemable} ? 1 : 0)
             && !$self->_looks_like_loser($p)
             && !$self->_task_is_busy($s, 'redeem')
-            && !($s->{done}{redeem} ? 1 : 0)) {
-            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
+            && !($s->{done}{redeem} ? 1 : 0)
+            && !$self->_redeem_in_cooldown($s)
+            && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
+            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;
             next;

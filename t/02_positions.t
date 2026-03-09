@@ -24,6 +24,29 @@ use lib 'lib';
     }
 }
 
+{
+    package InspectPositions;
+    use parent 'Positions';
+
+    sub new_with_responses {
+        my ($class, $responses, %args) = @_;
+        my $self = $class->SUPER::new(%args);
+        $self->{_responses} = $responses;
+        $self->{_idx} = 0;
+        $self->{_calls} = [];
+        return $self;
+    }
+
+    sub polymarket_cmd_capture {
+        my ($self, $needs_wallet, @args) = @_;
+        push @{ $self->{_calls} }, [@args];
+        my $r = $self->{_responses}[ $self->{_idx}++ ];
+        return @$r;
+    }
+
+    sub calls { return $_[0]{_calls}; }
+}
+
 my $p1 = TestPositions->new_with_responses([
     [0, " 0x1111111111111111111111111111111111111111\n", ''],
 ]);
@@ -41,6 +64,27 @@ my $p3 = TestPositions->new_with_responses([
 ], page_size => 2);
 my $all = $p3->fetch_positions('0x1111111111111111111111111111111111111111');
 is(scalar(@$all), 3, 'pagination works');
+
+
+my $p3c = InspectPositions->new_with_responses([
+    [0, '[]', ''],
+], page_size => 200);
+$p3c->fetch_closed_positions('0x1111111111111111111111111111111111111111');
+my $closed_cmd = join(' ', @{ $p3c->calls->[0] });
+like($closed_cmd, qr/data closed-positions .* --limit 50 --offset 0/, 'closed-positions fetch is capped to CLI max limit 50');
+
+
+my $p3b = TestPositions->new_with_responses([
+    [0, '[{"condition_id":"c1","outcome":"Yes","size":"1"}]', ''],
+    [0, '[]', ''],
+    [0, '[{"condition_id":"c2","outcome":"No"}]', ''],
+    [0, '[]', ''],
+], page_size => 1);
+my $all_manageable = $p3b->fetch_manageable_positions('0x1111111111111111111111111111111111111111');
+is(scalar(@$all_manageable), 2, 'fetch_manageable_positions merges open and hidden closed positions');
+ok(!$all_manageable->[0]{_hidden}, 'open position not marked hidden');
+ok($all_manageable->[1]{_hidden}, 'closed-only position marked hidden');
+ok($all_manageable->[1]{redeemable}, 'closed-only position is considered redeemable candidate');
 
 my $p4 = TestPositions->new_with_responses([
     [0, '{"status":"ok"}', ''],
@@ -91,7 +135,7 @@ is(
         outcome => 'Yes',
         outcome_index => 0,
     }),
-    '0xcb2c8ca36d7a765f04440834778b68d910e44d4d277f0792f012db64f0f94ac8',
+    '91898220183742601070760510452630848054828384834207792757174701092455484836552',
     'token_dec_for_position resolves hex token_id via condition_id + clob market tokens',
 );
 
@@ -183,6 +227,15 @@ like($sell_err_debug->{error}, qr/Command debug:/, 'error includes command debug
 like($sell_err_debug->{error}, qr/cmd=polymarket --signature-type proxy -o json clob market-order --token 123 --side sell --amount 1\.00/, 'error includes rendered command and args');
 like($sell_err_debug->{error}, qr/stdout_raw=raw-out/, 'error includes raw stdout for debugging');
 like($sell_err_debug->{error}, qr/stderr_raw=raw-err/, 'error includes raw stderr for debugging');
+
+
+my $p10c = CmdCapturePositions->new_with_results([
+    [0, '{"redeemed":true}', ''],
+]);
+my $r10c = $p10c->redeem_condition(condition_id => '0xabc', index_set => 2);
+ok($r10c->{ok}, 'redeem_condition supports index_set override');
+my $redeem_cmd = join(' ', @{ $p10c->calls->[0] });
+like($redeem_cmd, qr/ctf redeem --condition 0xabc --index-sets 2/, 'redeem command includes index_set when provided');
 
 my $p11 = FallbackPositions->new_with_results([], 
     signature_type => 'proxy',
