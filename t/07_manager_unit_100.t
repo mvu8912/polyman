@@ -81,4 +81,27 @@ for my $i (1..23) {
     is(scalar(@{ $dup->{pending_tasks} }), 1, "duplicate enqueue blocked round $i");
 }
 
+
+
+# close_loser busy should suppress queueing other sell tasks
+my $busy_close = bless {
+    cfg => {
+        tp1_trigger_pct => 1,
+        tp1_close_pct => 50,
+        tp2_trigger_pct => 0,
+        tp2_close_pct => 0,
+        max_loss_pct => 0,
+    },
+    pending_tasks => [],
+    active_workers => {},
+}, 'Manager';
+my $state_busy = { queued => { close_loser => JSON::PP::true }, done => {} };
+$busy_close->_queue_position_tasks(
+    { size => '10', percent_pnl => '10', token_id => '123' },
+    $state_busy,
+    'busy:key',
+    { stop_hit => 1 },
+);
+is(scalar @{ $busy_close->{pending_tasks} }, 0, 'no tp/stop tasks queued while close_loser is busy');
+
 done_testing();

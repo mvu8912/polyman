@@ -672,6 +672,7 @@ sub _is_permanent_task_failure {
     return 1 if $is_sell_action
         && $r =~ /not enough balance\s*\/\s*allowance/
         && $r =~ /approve set/;
+    return 1 if $is_sell_action && $r =~ /no orderbook exists for the requested token id/;
 
     return 0;
 }
@@ -840,6 +841,8 @@ sub _queue_position_tasks {
     my $size        = $p->{size};
     my $token_dec   = $self->_resolve_token_dec($p);
     my $percent_pnl = $p->{percent_pnl};
+
+    return if $self->_task_is_busy($s, 'close_loser') || ($s->{done}{close_loser} ? 1 : 0);
 
     if (($self->{cfg}{tp1_trigger_pct} + 0) > 0
         && ($self->{cfg}{tp1_close_pct} + 0) > 0

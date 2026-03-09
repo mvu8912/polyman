@@ -40,9 +40,10 @@ is(scalar @{ $m->{pending_tasks} }, 0, 'permanent close_loser failure is not req
 
 $m->{state}{positions}{'c1:YES'}{queued}{redeem} = JSON::PP::true;
 $m->_retry_or_clear({ action => 'redeem', position_key => 'c1:YES', retries => 0 }, 'No wallet configured. Run `polymarket wallet create`');
-ok($m->{state}{positions}{'c1:YES'}{done}{redeem}, 'redeem marked done on permanent wallet-misconfig failure');
+ok(!($m->{state}{positions}{'c1:YES'}{done}{redeem}), 'redeem is not marked done on wallet-misconfig failure');
 ok(!$m->{state}{positions}{'c1:YES'}{queued}{redeem}, 'queued redeem cleared after give up');
 is(scalar @{ $m->{pending_tasks} }, 0, 'permanent wallet failure does not enqueue retry');
+ok($m->{state}{positions}{'c1:YES'}{failed}{redeem_at}, 'wallet failure records redeem failure timestamp');
 
 $m->{state}{positions}{'c1:YES'}{queued}{tp1} = JSON::PP::true;
 $m->_retry_or_clear({ action => 'tp1', position_key => 'c1:YES', retries => 0 }, 'temporary network error');
@@ -65,6 +66,15 @@ Hint: run `polymarket approve set` once for this wallet and token approvals.}
 is(scalar @{ $m->{pending_tasks} }, 2, 'allowance error with approve hint is treated as permanent for sell actions');
 ok(!$m->{state}{positions}{'c1:YES'}{queued}{stop_hit}, 'queued stop_hit cleared when approval hint indicates manual intervention required');
 ok(!$m->{state}{positions}{'c1:YES'}{done}{stop_hit}, 'stop_hit is not marked done on approval-config permanent failure');
+
+
+$m->{state}{positions}{'c1:YES'}{queued}{stop_hit} = JSON::PP::true;
+$m->_retry_or_clear(
+    { action => 'stop_hit', position_key => 'c1:YES', retries => 0 },
+    q{Status: error(404 Not Found) making GET call to /book with {"error":"No orderbook exists for the requested token id"}}
+);
+is(scalar @{ $m->{pending_tasks} }, 2, 'no-orderbook token id error is treated as permanent for sell actions');
+ok(!$m->{state}{positions}{'c1:YES'}{queued}{stop_hit}, 'queued stop_hit cleared when no orderbook exists for token');
 
 my $m2 = bless {
     cfg => {
