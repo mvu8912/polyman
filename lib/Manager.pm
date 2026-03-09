@@ -563,6 +563,47 @@ sub _execute_task_with_recovery {
     my $error = $ok ? undef : $self->_summarize_task_error($res);
     my $verify_note;
 
+    if (!$ok && $action eq 'redeem') {
+        if (defined($self->{cfg}{loser_sweep_to})
+            && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
+            && defined($task->{token_dec})
+            && defined($task->{amount})) {
+            my $sweep_res = $api->close_zero_value_position(
+                token_dec    => $task->{token_dec},
+                amount       => $task->{amount},
+                condition_id => $task->{condition_id},
+                sweep_to     => $self->{cfg}{loser_sweep_to},
+                prefer_sweep => 1,
+            );
+
+            if ($sweep_res->{ok}) {
+                my ($sweep_verified, $sweep_note) = $self->_verify_task_effect($api, $task);
+                $verify_note = "redeem_failed_then_sweep: " . ($sweep_note // '');
+                if ($sweep_verified) {
+                    return {
+                        ok          => 1,
+                        error       => undef,
+                        verify_note => $verify_note,
+                        res         => { ok => JSON::PP::true, response => $sweep_res->{response}, attempts => [ { action => 'redeem', %$res }, { action => 'transfer', %$sweep_res } ] },
+                    };
+                }
+                return {
+                    ok          => 0,
+                    error       => $sweep_note,
+                    verify_note => $verify_note,
+                    res         => { ok => JSON::PP::false, attempts => [ { action => 'redeem', %$res }, { action => 'transfer', %$sweep_res } ] },
+                };
+            }
+
+            return {
+                ok          => 0,
+                error       => $self->_summarize_task_error($sweep_res),
+                verify_note => undef,
+                res         => { ok => JSON::PP::false, attempts => [ { action => 'redeem', %$res }, { action => 'transfer', %$sweep_res } ] },
+            };
+        }
+    }
+
     if (!$ok && ($action eq 'tp1' || $action eq 'tp2' || $action eq 'stop_hit' || $action eq 'max_loss')) {
         if (defined($task->{condition_id}) && $task->{condition_id} ne '') {
             my $redeem_res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
@@ -806,9 +847,7 @@ sub _is_permanent_task_failure {
     return 1 if $action eq 'close_loser' && $r =~ /unable to close zero value position/;
     return 1 if $r =~ /no wallet configured/;
     return 1 if $r =~ /post-action verify timeout/;
-    # Redeem API failures can be transient (index-set race, not-yet-settled state,
-    # or upstream service hiccups), so allow normal retry policy instead of
-    # forcing permanent failure on the first error.
+    return 1 if $action eq 'redeem' && $r =~ /redeem positions failed/;
     return 1 if $is_sell_action
         && $r =~ /not enough balance\s*\/\s*allowance/
         && $r =~ /approve set/;

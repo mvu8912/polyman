@@ -135,4 +135,24 @@ my $redeem_task = {
     is($res->{res}{attempts}[1]{action}, 'transfer', 'second attempt is transfer sweep');
 }
 
+{
+    no warnings 'redefine';
+    local *Manager::_verify_task_effect = sub {
+        my ($self, $api, $task) = @_;
+        return (1, 'verified position clear on attempt=1');
+    };
+
+    my $api = FakeAPI->new(
+        sell_responses   => [],
+        redeem_responses => [ { ok => JSON::PP::false, error => 'redeem failed' } ],
+        sweep_responses  => [ { ok => JSON::PP::true, response => { tx => '0x3' } } ],
+    );
+
+    my $res = $m->_execute_task_with_recovery($api, $redeem_task);
+    ok($res->{ok}, 'redeem command failure falls back to sweep transfer');
+    like($res->{verify_note}, qr/redeem_failed_then_sweep/, 'verify note records redeem-fail->sweep path');
+    is($res->{res}{attempts}[0]{action}, 'redeem', 'first attempt remains redeem');
+    is($res->{res}{attempts}[1]{action}, 'transfer', 'second attempt is transfer sweep');
+}
+
 done_testing;

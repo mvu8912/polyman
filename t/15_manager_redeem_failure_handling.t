@@ -31,8 +31,8 @@ my $m = bless {
     };
 
     ok(
-        !$m->_is_permanent_task_failure('redeem', '{"error":"Redeem positions failed"}'),
-        'redeem positions failed treated as retryable failure',
+        $m->_is_permanent_task_failure('redeem', '{"error":"Redeem positions failed"}'),
+        'redeem positions failed treated as permanent failure',
     );
 
     my $task = {
@@ -45,16 +45,13 @@ my $m = bless {
     $m->_retry_or_clear($task, '{"error":"Redeem positions failed"}');
 }
 
-is(scalar @{ $m->{pending_tasks} }, 1, 'retryable redeem failure is queued for retry');
-is($m->{pending_tasks}[0]{action}, 'redeem', 'queued retry action is redeem');
-is($m->{pending_tasks}[0]{retries}, 1, 'queued retry increments retry counter');
+is(scalar @{ $m->{pending_tasks} }, 0, 'permanent redeem failure is not retried');
 ok(!($m->{state}{positions}{'c1:Up'}{done}{redeem}), 'redeem action is not marked done after failure');
-ok(!($m->{state}{positions}{'c1:Up'}{failed}{redeem_at}), 'redeem failure timestamp not recorded until retries are exhausted');
+ok($m->{state}{positions}{'c1:Up'}{failed}{redeem_at}, 'redeem failure timestamp recorded');
 
 my $joined = join("\n", @logs);
-unlike($joined, qr/giving up task action=redeem key=c1:Up/, 'no giving-up log emitted while redeem is still retryable');
-like($joined, qr/task diagnostic action=redeem key=c1:Up mode=retrying reason=\{"error":"Redeem positions failed"\}/, 'diagnostic redeem log emitted in retrying mode');
-like($joined, qr/retry task action=redeem key=c1:Up retry=1 reason=\{"error":"Redeem positions failed"\}/, 'retry log emitted for redeem failure');
+like($joined, qr/giving up task action=redeem key=c1:Up .*permanent failure/, 'giving-up log emitted for redeem permanent failure');
+like($joined, qr/task diagnostic action=redeem key=c1:Up mode=giving_up reason=\{"error":"Redeem positions failed"\}/, 'diagnostic redeem log emitted in giving_up mode');
 like($joined, qr/task=\{/, 'diagnostic log includes serialized task payload');
 like($joined, qr/position=\{"condition_id":"c1","outcome":"Up","size":"1\.23"\}/, 'diagnostic log includes serialized position payload');
 like($joined, qr/state=\{/, 'diagnostic log includes serialized state payload');
