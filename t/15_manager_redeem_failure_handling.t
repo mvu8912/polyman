@@ -16,6 +16,7 @@ my $m = bless {
             'c1:Up' => {
                 queued => { redeem => JSON::PP::true },
                 done => {},
+                last_position => { condition_id => 'c1', outcome => 'Up', size => '1.23' },
             }
         }
     },
@@ -49,8 +50,9 @@ ok($m->{state}{positions}{'c1:Up'}{done}{redeem}, 'redeem action marked done aft
 
 my $joined = join("\n", @logs);
 like($joined, qr/giving up task action=redeem key=c1:Up .*permanent failure/, 'giving-up log emitted for redeem permanent failure');
-like($joined, qr/redeem task diagnostic key=c1:Up action=redeem reason=\{"error":"Redeem positions failed"\}/, 'diagnostic redeem log emitted with reason');
+like($joined, qr/task diagnostic action=redeem key=c1:Up mode=giving_up reason=\{"error":"Redeem positions failed"\}/, 'diagnostic redeem log emitted with reason');
 like($joined, qr/task=\{/, 'diagnostic log includes serialized task payload');
+like($joined, qr/position=\{"condition_id":"c1","outcome":"Up","size":"1\.23"\}/, 'diagnostic log includes serialized position payload');
 like($joined, qr/state=\{/, 'diagnostic log includes serialized state payload');
 
 done_testing();

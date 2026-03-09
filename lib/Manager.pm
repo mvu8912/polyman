@@ -146,6 +146,15 @@ sub log_line {
     print '[' . now_utc() . "] $msg\n";
 }
 
+sub _json_compact {
+    my ($v) = @_;
+    my $txt = eval { JSON::PP->new->canonical->encode($v) };
+    return '{}' if $@;
+    $txt =~ s/\s+/ /g;
+    $txt =~ s/^\s+|\s+$//g;
+    return $txt;
+}
+
 sub position_key {
     my ($self, $p) = @_;
     return join(':', ($p->{condition_id} // 'none'), ($p->{outcome} // 'none'));
@@ -610,11 +619,26 @@ sub _retry_or_clear {
     my $is_permanent = $self->_is_permanent_task_failure($action, $reason);
     my $retry = ($task->{retries} // 0) + 1;
 
+    my $task_json = _json_compact($task);
+    my $state_json = '{}';
+    my $position_json = '{}';
+    if (defined $key && exists $self->{state}{positions}{$key}) {
+        my $st = $self->{state}{positions}{$key};
+        $state_json = _json_compact($st);
+        $position_json = _json_compact($st->{last_position});
+    }
+
+    my %diag_actions = map { $_ => 1 } qw(redeem close_loser tp1 tp2 stop_hit max_loss);
+    if ($diag_actions{$action} && ($reason // '') ne '') {
+        my $mode = (!$is_permanent && $retry <= $self->{cfg}{worker_max_retries}) ? 'retrying' : 'giving_up';
+        $self->log_line("WARN: task diagnostic action=$action key=$key mode=$mode reason=$reason task=$task_json position=$position_json state=$state_json");
+    }
+
     if (!$is_permanent && $retry <= $self->{cfg}{worker_max_retries}) {
         my %new = %$task;
         $new{retries} = $retry;
         $self->enqueue_task(%new);
-        $self->log_line("WARN: retry task action=$action key=$key retry=$retry reason=$reason task=" . JSON::PP->new->canonical->encode($task));
+        $self->log_line("WARN: retry task action=$action key=$key retry=$retry reason=$reason task=$task_json");
         return;
     }
 
@@ -633,21 +657,6 @@ sub _retry_or_clear {
 
     my $tag = $is_permanent ? 'permanent failure' : 'retry limit reached';
     $self->log_line("ERR: giving up task action=$action key=$key reason=$reason detail=$tag");
-
-    if ($action eq 'redeem' && ($reason // '') ne '') {
-        my $task_json = eval { JSON::PP->new->canonical->encode($task) };
-        $task_json = '{}' if $@;
-
-        my $state_json = '{}';
-        if (defined $key && exists $self->{state}{positions}{$key}) {
-            $state_json = eval { JSON::PP->new->canonical->encode($self->{state}{positions}{$key}) };
-            $state_json = '{}' if $@;
-        }
-
-        $self->log_line(
-            "WARN: redeem task diagnostic key=$key action=$action reason=$reason task=$task_json state=$state_json"
-        );
-    }
 }
 
 sub reap_workers {
@@ -833,6 +842,7 @@ sub run_iteration {
         my $s = $self->{state}{positions}{$key};
         $s->{queued} ||= {};
         $s->{done} ||= {};
+        $s->{last_position} = { %$p };
 
         my $is_hidden = $p->{_hidden} ? 1 : 0;
         if ($is_hidden) {
