@@ -110,11 +110,22 @@ ok($sell_recover->{ok}, 'market_sell retries after balance/allowance sync');
 my $p5c = TestPositions->new_with_responses([
     [1, '', '{"error":"not enough balance / allowance"}'],
     [0, 'Balance allowance updated.', ''],
-    [1, '', '{"error":"not enough balance / allowance"}'],
+    [0, '{"status":"approved"}', ''],
+    [0, '{"status":"ok"}', ''],
 ]);
-my $sell_needs_approval = $p5c->market_sell(token_dec => '123', amount => '1.0');
+my $sell_auto_approve = $p5c->market_sell(token_dec => '123', amount => '1.0');
+ok($sell_auto_approve->{ok}, 'market_sell auto-runs approve set and retries sell when allowance is missing');
+
+my $p5d = TestPositions->new_with_responses([
+    [1, '', '{"error":"not enough balance / allowance"}'],
+    [0, 'Balance allowance updated.', ''],
+    [1, '', '{"error":"not enough balance / allowance"}'],
+    [1, '', 'approve failed'],
+]);
+my $sell_needs_approval = $p5d->market_sell(token_dec => '123', amount => '1.0');
 ok(!$sell_needs_approval->{ok}, 'market_sell still fails when approval is truly missing');
 like($sell_needs_approval->{error}, qr/polymarket approve set/, 'market_sell provides approve hint on persistent allowance failure');
+like($sell_needs_approval->{error}, qr/Attempted `polymarket approve set` but it failed: approve failed/, 'market_sell includes approve-set failure details');
 
 my $p6 = TestPositions->new_with_responses([
     [0, '{"redeemed":true}', ''],
@@ -291,5 +302,9 @@ my $x13 = $p13->close_zero_value_position(
 );
 ok(!$x13->{ok}, 'transfer propagates failure when raw tx fails');
 like($x13->{attempts}[0]{error}, qr/forced fallback failure/, 'raw tx failure message included');
+
+my $p14 = TestPositions->new_with_responses([]);
+is($p14->_normalise_raw_tx_hex("0xabc\n"), '0x0abc', 'normalise_raw_tx_hex pads odd-length hex and trims whitespace');
+is($p14->_normalise_raw_tx_hex("\x01\x02"), '0x0102', 'normalise_raw_tx_hex converts binary bytes into hex');
 
 done_testing();

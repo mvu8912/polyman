@@ -508,11 +508,46 @@ sub _run_task_in_child {
     $self->log_line("INFO: worker starting pid=$$ task=$task_desc");
     $self->log_line("INFO: worker wallet env pid=$$ wallet_address=" . (defined($ENV{WALLET_ADDRESS}) ? "set" : "unset") . " private_key=" . ((defined($ENV{PRIVATE_KEY}) && $ENV{PRIVATE_KEY} ne "") ? "set" : "unset"));
 
+    my $exec = $self->_execute_task_with_recovery($api, $task);
+    my $res = $exec->{res};
+    my $ok = $exec->{ok};
+    my $error = $exec->{error};
+    my $verify_note = $exec->{verify_note};
+
+    my $payload = {
+        task        => $task,
+        ok          => $ok ? JSON::PP::true : JSON::PP::false,
+        error       => $error,
+        verify_note => $verify_note,
+        response    => $res->{response},
+        attempts    => $res->{attempts},
+        ts          => now_utc(),
+    };
+
+    my $path = $self->_child_result_path($$);
+    open my $fh, '>', $path or exit 2;
+    print $fh JSON::PP->new->utf8->canonical->encode($payload);
+    close $fh;
+
+    if ($ok) {
+        $self->log_line("INFO: worker finished pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " verify='" . ($verify_note // '') . "'");
+    }
+    else {
+        $self->log_line("WARN: worker failed pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " error='" . ($error // 'worker failed') . "'");
+    }
+
+    exit($ok ? 0 : 1);
+}
+
+sub _execute_task_with_recovery {
+    my ($self, $api, $task) = @_;
+    my $action = $task->{action} // '';
+
     my $res;
-    if ($task->{action} eq 'redeem') {
+    if ($action eq 'redeem') {
         $res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
     }
-    elsif ($task->{action} eq 'close_loser') {
+    elsif ($action eq 'close_loser') {
         $res = $api->close_zero_value_position(
             token_dec    => $task->{token_dec},
             amount       => $task->{amount},
@@ -528,11 +563,166 @@ sub _run_task_in_child {
     my $error = $ok ? undef : $self->_summarize_task_error($res);
     my $verify_note;
 
+    if (!$ok && $action eq 'redeem') {
+        if (defined($self->{cfg}{loser_sweep_to})
+            && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
+            && defined($task->{token_dec})) {
+            my $sweep_res = $api->close_zero_value_position(
+                token_dec    => $task->{token_dec},
+                amount       => $task->{amount},
+                condition_id => $task->{condition_id},
+                sweep_to     => $self->{cfg}{loser_sweep_to},
+                prefer_sweep => 1,
+            );
+
+            if ($sweep_res->{ok}) {
+                my ($sweep_verified, $sweep_note) = $self->_verify_task_effect($api, $task);
+                $verify_note = "redeem_failed_then_sweep: " . ($sweep_note // '');
+                if ($sweep_verified) {
+                    return {
+                        ok          => 1,
+                        error       => undef,
+                        verify_note => $verify_note,
+                        res         => { ok => JSON::PP::true, response => $sweep_res->{response}, attempts => [ { action => 'redeem', %$res }, { action => 'transfer', %$sweep_res } ] },
+                    };
+                }
+                return {
+                    ok          => 0,
+                    error       => $sweep_note,
+                    verify_note => $verify_note,
+                    res         => { ok => JSON::PP::false, attempts => [ { action => 'redeem', %$res }, { action => 'transfer', %$sweep_res } ] },
+                };
+            }
+
+            return {
+                ok          => 0,
+                error       => $self->_summarize_task_error($sweep_res),
+                verify_note => undef,
+                res         => { ok => JSON::PP::false, attempts => [ { action => 'redeem', %$res }, { action => 'transfer', %$sweep_res } ] },
+            };
+        }
+    }
+
+    if (!$ok && ($action eq 'tp1' || $action eq 'tp2' || $action eq 'stop_hit' || $action eq 'max_loss')) {
+        if (defined($task->{condition_id}) && $task->{condition_id} ne '') {
+            my $redeem_res = $api->redeem_condition(condition_id => $task->{condition_id}, index_set => $task->{index_set});
+            if ($redeem_res->{ok}) {
+                my ($redeem_verified, $redeem_note) = $self->_verify_task_effect($api, $task);
+                $verify_note = "sell_failed_then_redeem: " . ($redeem_note // '');
+                if ($redeem_verified) {
+                    return {
+                        ok         => 1,
+                        error      => undef,
+                        verify_note=> $verify_note,
+                        res        => { ok => JSON::PP::true, response => $redeem_res->{response}, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res } ] },
+                    };
+                }
+
+                return {
+                    ok          => 0,
+                    error       => $redeem_note,
+                    verify_note => $verify_note,
+                    res         => { ok => JSON::PP::false, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res } ] },
+                };
+            }
+
+            if (defined($self->{cfg}{loser_sweep_to})
+                && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
+                && defined($task->{token_dec})
+                && defined($task->{amount})) {
+                my $sweep_res = $api->close_zero_value_position(
+                    token_dec    => $task->{token_dec},
+                    amount       => $task->{amount},
+                    condition_id => $task->{condition_id},
+                    sweep_to     => $self->{cfg}{loser_sweep_to},
+                    prefer_sweep => 1,
+                );
+                if ($sweep_res->{ok}) {
+                    my ($sweep_verified, $sweep_note) = $self->_verify_task_effect($api, $task);
+                    $verify_note = "sell_redeem_failed_then_sweep: " . ($sweep_note // '');
+                    if ($sweep_verified) {
+                        return {
+                            ok          => 1,
+                            error       => undef,
+                            verify_note => $verify_note,
+                            res         => { ok => JSON::PP::true, response => $sweep_res->{response}, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res }, { action => 'transfer', %$sweep_res } ] },
+                        };
+                    }
+                    return {
+                        ok          => 0,
+                        error       => $sweep_note,
+                        verify_note => $verify_note,
+                        res         => { ok => JSON::PP::false, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res }, { action => 'transfer', %$sweep_res } ] },
+                    };
+                }
+
+                return {
+                    ok          => 0,
+                    error       => $self->_summarize_task_error($sweep_res),
+                    verify_note => undef,
+                    res         => { ok => JSON::PP::false, attempts => [ { action => 'sell', %$res }, { action => 'redeem', %$redeem_res }, { action => 'transfer', %$sweep_res } ] },
+                };
+            }
+        }
+    }
+
     if ($ok) {
         my ($verified, $note) = $self->_verify_task_effect($api, $task);
         $verify_note = $note;
         if (!$verified) {
-            if (($task->{action} // '') eq 'close_loser'
+            if (($task->{action} // '') eq 'redeem'
+                && defined($self->{cfg}{loser_sweep_to})
+                && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
+                && defined($task->{token_dec})) {
+                my $sweep_res = $api->close_zero_value_position(
+                    token_dec    => $task->{token_dec},
+                    amount       => $task->{amount},
+                    condition_id => $task->{condition_id},
+                    sweep_to     => $self->{cfg}{loser_sweep_to},
+                    prefer_sweep => 1,
+                );
+
+                my $sweep_ok = $sweep_res->{ok} ? 1 : 0;
+                if ($sweep_ok) {
+                    my ($sweep_verified, $sweep_note) = $self->_verify_task_effect($api, $task);
+                    $verify_note = "redeem_verify_failed_then_sweep: " . ($sweep_note // '');
+                    if ($sweep_verified) {
+                        $ok = 1;
+                        $error = undef;
+                        $res = {
+                            ok       => JSON::PP::true,
+                            response => $sweep_res->{response},
+                            attempts => [
+                                { action => 'redeem', %$res },
+                                { action => 'transfer', %$sweep_res },
+                            ],
+                        };
+                    }
+                    else {
+                        $ok = 0;
+                        $error = $sweep_note;
+                        $res = {
+                            ok       => JSON::PP::false,
+                            attempts => [
+                                { action => 'redeem', %$res },
+                                { action => 'transfer', %$sweep_res },
+                            ],
+                        };
+                    }
+                }
+                else {
+                    $ok = 0;
+                    $error = ($note // 'post-action verify failed') . '; sweep retry failed: ' . $self->_summarize_task_error($sweep_res);
+                    $res = {
+                        ok       => JSON::PP::false,
+                        attempts => [
+                            { action => 'redeem', %$res },
+                            { action => 'transfer', %$sweep_res },
+                        ],
+                    };
+                }
+            }
+            elsif (($task->{action} // '') eq 'close_loser'
                 && defined($self->{cfg}{loser_sweep_to})
                 && $self->{cfg}{loser_sweep_to} =~ /^0x[0-9a-fA-F]{40}$/
                 && defined($task->{token_dec})
@@ -570,29 +760,12 @@ sub _run_task_in_child {
         }
     }
 
-    my $payload = {
-        task        => $task,
-        ok          => $ok ? JSON::PP::true : JSON::PP::false,
+    return {
+        ok          => $ok,
         error       => $error,
         verify_note => $verify_note,
-        response    => $res->{response},
-        attempts    => $res->{attempts},
-        ts          => now_utc(),
+        res         => $res,
     };
-
-    my $path = $self->_child_result_path($$);
-    open my $fh, '>', $path or exit 2;
-    print $fh JSON::PP->new->utf8->canonical->encode($payload);
-    close $fh;
-
-    if ($ok) {
-        $self->log_line("INFO: worker finished pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " verify='" . ($verify_note // '') . "'");
-    }
-    else {
-        $self->log_line("WARN: worker failed pid=$$ action=" . ($task->{action} // '') . " key=" . ($task->{position_key} // '') . " error='" . ($error // 'worker failed') . "'");
-    }
-
-    exit($ok ? 0 : 1);
 }
 
 sub dispatch_workers {
@@ -942,6 +1115,10 @@ sub run_iteration {
         }
 
         my $redeem_index_set = _index_set_from_outcome_index($p->{outcome_index});
+        my $size = _num_or_undef($p->{size});
+        my $current_value = _num_or_undef($p->{current_value});
+        my $token_dec = $self->_resolve_token_dec($p);
+        my $has_token_dec = _is_token_id($token_dec);
 
         my $is_hidden = $p->{_hidden} ? 1 : 0;
         if ($is_hidden) {
@@ -952,19 +1129,21 @@ sub run_iteration {
                 && !($s->{done}{redeem} ? 1 : 0)
                 && !$self->_redeem_in_cooldown($s)
                 && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
-                my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
+                my $task = $self->_build_task(
+                    action       => 'redeem',
+                    position_key => $key,
+                    token_dec    => ($has_token_dec ? $token_dec : undef),
+                    amount       => $size,
+                    condition_id => $p->{condition_id},
+                    index_set    => $redeem_index_set,
+                );
                 $self->enqueue_task(%$task);
                 $s->{queued}{redeem} = JSON::PP::true;
             }
             next;
         }
 
-        my $size = _num_or_undef($p->{size});
         next unless defined $size && $size > 0;
-
-        my $current_value = _num_or_undef($p->{current_value});
-        my $token_dec = $self->_resolve_token_dec($p);
-        my $has_token_dec = _is_token_id($token_dec);
 
         if ($self->{cfg}{close_on_redeemable}
             && ($p->{redeemable} ? 1 : 0)
@@ -973,7 +1152,14 @@ sub run_iteration {
             && !($s->{done}{redeem} ? 1 : 0)
             && !$self->_redeem_in_cooldown($s)
             && !$self->_condition_redeem_busy_or_done($p->{condition_id}, $redeem_index_set)) {
-            my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id}, index_set => $redeem_index_set);
+            my $task = $self->_build_task(
+                action       => 'redeem',
+                position_key => $key,
+                token_dec    => ($has_token_dec ? $token_dec : undef),
+                amount       => $size,
+                condition_id => $p->{condition_id},
+                index_set    => $redeem_index_set,
+            );
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;
             next;

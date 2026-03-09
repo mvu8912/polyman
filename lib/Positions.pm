@@ -389,6 +389,14 @@ sub _sync_conditional_balance_allowance {
     );
 }
 
+sub _approve_wallet_trading {
+    my ($self) = @_;
+    return $self->polymarket_cmd_capture(
+        1,
+        'approve', 'set',
+    );
+}
+
 sub market_sell {
     my ($self, %args) = @_;
     my $token_dec = _normalize_token_dec($args{token_dec});
@@ -414,7 +422,20 @@ sub market_sell {
         if ($exit != 0
             && defined($stderr)
             && $stderr =~ /not enough balance\s*\/\s*allowance/i) {
-            $stderr .= "\nHint: run `polymarket approve set` once for this wallet and token approvals.";
+            my ($approve_exit, $approve_stdout, $approve_stderr) = $self->_approve_wallet_trading();
+            if ($approve_exit == 0) {
+                ($exit, $stdout, $stderr) = $self->polymarket_cmd_capture(1, @cmd);
+            }
+
+            if ($exit != 0
+                && defined($stderr)
+                && $stderr =~ /not enough balance\s*\/\s*allowance/i) {
+                if ($approve_exit != 0) {
+                    my $approve_detail = $approve_stderr || $approve_stdout || 'approve set failed';
+                    $stderr .= "\nAttempted `polymarket approve set` but it failed: $approve_detail";
+                }
+                $stderr .= "\nHint: run `polymarket approve set` once for this wallet and token approvals.";
+            }
         }
     }
 
@@ -463,7 +484,7 @@ sub _transfer_outcome_token {
     return {
         ok    => JSON::PP::false,
         error => 'missing sweep args',
-    } unless defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec && defined $amount;
+    } unless defined $sweep_to && $sweep_to =~ /^0x[0-9a-fA-F]{40}$/ && defined $token_dec;
 
     my $txhash = eval {
         $self->_sweep_transfer_via_raw_tx(
@@ -482,6 +503,21 @@ sub _transfer_outcome_token {
     my $err = $@ || 'raw transfer failed';
     $err =~ s/\s+\z//;
     return { ok => JSON::PP::false, error => $err };
+}
+
+sub _normalise_raw_tx_hex {
+    my ($self, $raw) = @_;
+    $raw = '' unless defined $raw;
+    $raw =~ s/^\s+|\s+$//g;
+
+    if ($raw !~ /\A0x?[0-9a-fA-F]*\z/) {
+        $raw = unpack('H*', $raw);
+    }
+
+    $raw =~ s/^0x//i;
+    $raw =~ s/\s+//g;
+    $raw = "0$raw" if (length($raw) % 2) == 1;
+    return "0x$raw";
 }
 
 sub _load_eth_deps {
@@ -632,12 +668,7 @@ sub _sweep_transfer_via_raw_tx {
     );
     $key->sign_transaction($tx);
 
-    my $raw = $tx->serialize;
-    $raw =~ s/^\s+|\s+$//g;
-    if ($raw !~ /^0x[0-9a-fA-F]+$/) {
-        my $hex = unpack('H*', $raw);
-        $raw = '0x' . $hex;
-    }
+    my $raw = $self->_normalise_raw_tx_hex($tx->serialize);
 
     return $self->_rpc_call('eth_sendRawTransaction', [$raw]);
 }

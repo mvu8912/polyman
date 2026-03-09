@@ -51,7 +51,7 @@ ok($m->{state}{positions}{'c1:Up'}{failed}{redeem_at}, 'redeem failure timestamp
 
 my $joined = join("\n", @logs);
 like($joined, qr/giving up task action=redeem key=c1:Up .*permanent failure/, 'giving-up log emitted for redeem permanent failure');
-like($joined, qr/task diagnostic action=redeem key=c1:Up mode=giving_up reason=\{"error":"Redeem positions failed"\}/, 'diagnostic redeem log emitted with reason');
+like($joined, qr/task diagnostic action=redeem key=c1:Up mode=giving_up reason=\{"error":"Redeem positions failed"\}/, 'diagnostic redeem log emitted in giving_up mode');
 like($joined, qr/task=\{/, 'diagnostic log includes serialized task payload');
 like($joined, qr/position=\{"condition_id":"c1","outcome":"Up","size":"1\.23"\}/, 'diagnostic log includes serialized position payload');
 like($joined, qr/state=\{/, 'diagnostic log includes serialized state payload');
