@@ -250,9 +250,49 @@ sub _position_has_inflight_task {
     return 0;
 }
 
+sub _condition_redeem_busy_or_done {
+    my ($self, $condition_id) = @_;
+    return 0 unless defined $condition_id && $condition_id ne '';
+
+    for my $task (@{ $self->{pending_tasks} || [] }) {
+        next unless ($task->{action} // '') eq 'redeem';
+        return 1 if (($task->{condition_id} // '') eq $condition_id);
+    }
+
+    for my $pid (keys %{ $self->{active_workers} || {} }) {
+        my $task = $self->{active_workers}{$pid}{task} || {};
+        next unless ($task->{action} // '') eq 'redeem';
+        return 1 if (($task->{condition_id} // '') eq $condition_id);
+    }
+
+    for my $k (keys %{ $self->{state}{positions} || {} }) {
+        my $st = $self->{state}{positions}{$k};
+        next unless ref($st) eq 'HASH';
+        my ($cond) = split(/:/, ($k // ''), 2);
+        next unless defined $cond && $cond eq $condition_id;
+        return 1 if $st->{done} && $st->{done}{redeem};
+    }
+
+    return 0;
+}
+
+sub _has_active_redeem_worker {
+    my ($self) = @_;
+    for my $pid (keys %{ $self->{active_workers} || {} }) {
+        my $task = $self->{active_workers}{$pid}{task} || {};
+        return 1 if ($task->{action} // '') eq 'redeem';
+    }
+    return 0;
+}
+
 sub enqueue_task {
     my ($self, %task) = @_;
     return if $self->_pending_has_task(\%task);
+
+    if (($task{action} // '') eq 'redeem') {
+        return if $self->_condition_redeem_busy_or_done($task{condition_id});
+    }
+
     push @{ $self->{pending_tasks} }, \%task;
 }
 
@@ -546,7 +586,20 @@ sub dispatch_workers {
     $limit = 1 if $limit < 1;
 
     while (@{ $self->{pending_tasks} } && scalar(keys %{ $self->{active_workers} }) < $limit) {
-        my $task = shift @{ $self->{pending_tasks} };
+        my $pick = 0;
+        if ($self->_has_active_redeem_worker()) {
+            my $found_non_redeem;
+            for my $i (0 .. $#{ $self->{pending_tasks} }) {
+                my $cand = $self->{pending_tasks}[$i] || {};
+                next if (($cand->{action} // '') eq 'redeem');
+                $pick = $i;
+                $found_non_redeem = 1;
+                last;
+            }
+            last unless $found_non_redeem;
+        }
+
+        my $task = splice(@{ $self->{pending_tasks} }, $pick, 1);
         my $pid = fork();
 
         if (!defined $pid) {
@@ -850,7 +903,8 @@ sub run_iteration {
                 && defined($p->{condition_id})
                 && $p->{condition_id} ne ''
                 && !$self->_task_is_busy($s, 'redeem')
-                && !($s->{done}{redeem} ? 1 : 0)) {
+                && !($s->{done}{redeem} ? 1 : 0)
+                && !$self->_condition_redeem_busy_or_done($p->{condition_id})) {
                 my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
                 $self->enqueue_task(%$task);
                 $s->{queued}{redeem} = JSON::PP::true;
@@ -869,7 +923,8 @@ sub run_iteration {
             && ($p->{redeemable} ? 1 : 0)
             && !$self->_looks_like_loser($p)
             && !$self->_task_is_busy($s, 'redeem')
-            && !($s->{done}{redeem} ? 1 : 0)) {
+            && !($s->{done}{redeem} ? 1 : 0)
+            && !$self->_condition_redeem_busy_or_done($p->{condition_id})) {
             my $task = $self->_build_task(action => 'redeem', position_key => $key, condition_id => $p->{condition_id});
             $self->enqueue_task(%$task);
             $s->{queued}{redeem} = JSON::PP::true;
